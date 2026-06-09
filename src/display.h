@@ -14,6 +14,14 @@
 // 初始化所有屏幕 (返回成功初始化的屏幕数)
 uint8_t displayBegin();
 
+// === 背光 PWM 调光 ===
+
+// 设置背光亮度 (0=关, 255=最亮)
+void displaySetBacklight(uint8_t level);
+
+// 获取当前背光亮度
+uint8_t displayGetBacklight();
+
 // 在指定屏幕显示按键功能
 //   index: 屏幕索引 0..NUM_KEYS-1
 //   label: 功能名称

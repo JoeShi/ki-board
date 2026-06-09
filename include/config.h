@@ -25,4 +25,9 @@
 // 编码器参数
 #define ENCODER_DEBOUNCE_MS 5
 
+// 背光参数 (PWM 调光)
+#define BL_PWM_FREQ         5000    // PWM 频率 (Hz)
+#define BL_PWM_RESOLUTION   8       // PWM 分辨率 (位), 8位=0..255
+#define BL_DEFAULT_LEVEL    200     // 默认亮度 (0..255), 约78%, 兼顾省电与可视
+
 #endif // CONFIG_H

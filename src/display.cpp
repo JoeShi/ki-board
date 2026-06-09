@@ -29,12 +29,16 @@ static Arduino_DataBus* s_bus[NUM_KEYS]   = {nullptr};
 static Arduino_GFX*     s_gfx[NUM_KEYS]   = {nullptr};
 static bool             s_ready[NUM_KEYS] = {false};
 
+// 当前背光亮度
+static uint8_t s_backlightLevel = BL_DEFAULT_LEVEL;
+
 uint8_t displayBegin() {
     uint8_t ok = 0;
 
-    // 背光统一打开
-    pinMode(PIN_LCD_BL, OUTPUT);
-    digitalWrite(PIN_LCD_BL, HIGH);
+    // 背光: 使用 LEDC PWM 调光 (Arduino Core 3.x 新 API)
+    // ledcAttach(pin, freq, resolution) 自动分配 LEDC 通道
+    ledcAttach(PIN_LCD_BL, BL_PWM_FREQ, BL_PWM_RESOLUTION);
+    ledcWrite(PIN_LCD_BL, s_backlightLevel);
 
     for (uint8_t i = 0; i < NUM_KEYS; i++) {
         // 共享 DC/SCK/MOSI, 独立 CS, 共享 SPI 外设 (FSPI)
@@ -115,4 +119,16 @@ void displayShowEncoderMode(const char* modeLabel) {
         g->print("Mode:");
         g->print(modeLabel);
     }
+}
+
+// === 背光 PWM 调光 ===
+
+void displaySetBacklight(uint8_t level) {
+    s_backlightLevel = level;
+    ledcWrite(PIN_LCD_BL, level);
+    Serial.printf("[LCD] Backlight level: %d\n", level);
+}
+
+uint8_t displayGetBacklight() {
+    return s_backlightLevel;
 }
