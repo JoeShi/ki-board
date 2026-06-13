@@ -133,16 +133,6 @@ pio device monitor --baud 115200
 
 ---
 
-## 🗺 开发进度
-
-- [x] 开发环境搭建 (PlatformIO + pioarduino + ESP32-S3)
-- [x] 屏幕显示模块 (4× ST7735)
-- [x] 按键 + 旋钮输入
-- [x] USB HID 键盘 (当前方案) / BLE HID (备用, 代码保留)
-- [x] Web 配置系统 (WiFi AP + REST API + NVS)
-- [ ] 硬件到货后烧录验证
-- [ ] 外壳设计 / PCB (可选) / PCB (可选)
-
 ---
 
 ## 📄 许可

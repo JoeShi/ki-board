@@ -9,4 +9,4 @@ inclusion: always
 
 # 交互
 
-- 当你使用 agent-browser 的时候，永远使用我自己的 Chrome 浏览器，我的浏览器已经了
+- 当你使用 agent-browser 的时候，永远使用我自己的 Chrome 浏览器，我的浏览器已经登录了

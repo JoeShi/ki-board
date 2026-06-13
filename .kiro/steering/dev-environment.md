@@ -7,9 +7,15 @@ inclusion: always
 ## 工具链版本
 - PlatformIO Core 6.1.19
 - pioarduino 平台 espressif32 @ 55.3.39
-- Arduino Core 3.3.9
-- Xtensa 工具链 toolchain-xtensa-esp32s3 @ 12.2.0
+- Arduino Core (framework-arduinoespressif32) @ 3.3.9
+- framework-arduinoespressif32-libs @ 5.5.4
+- Xtensa 工具链 toolchain-xtensa-esp-elf @ 14.2.0+20260121
+- tool-xtensa-esp-elf-gdb @ 17.1.0
 - esptool 5.3.0
+
+> 注: 早期版本工具链包名为 `toolchain-xtensa-esp32s3 @ 12.2.0`，pioarduino 55.3.39
+> 已改用统一的 `toolchain-xtensa-esp-elf @ 14.2.0` 并能自动安装，下方"工具链解压
+> 目录嵌套问题"等手动修复步骤是早期踩坑记录，正常情况下现已不需要。
 
 ## 编译命令
 PlatformIO CLI 已加入 PATH，直接用 `pio run`。
@@ -70,7 +76,10 @@ GitHub 直连不稳定，git clone 库依赖可能超时。建议配置代理或
 - 含配对、电池电量、LED状态、低功耗(light/deep sleep)等完整功能
 - 备选: wakwak-koba/ESP32-NimBLE-Keyboard、TheNitek/ESP32-NimBLE-Combo
 
-### 旋转编码器 → RotaryEncoderPCNT
+### 旋转编码器 → RotaryEncoderPCNT  (⚠️ 已移除, 仅存档)
+> 硬件方案已改为圆形 LCD + 矩形 LCD, 不再使用旋转编码器
+> (见 design-decisions.md 第 4 节)。platformio.ini 已 `lib_ignore` 此库。
+> 以下为当时的选型研究, 仅作历史存档。
 - 仓库: https://github.com/vickash/RotaryEncoderPCNT (PIO library.json 已含)
 - 用**新版 PCNT 驱动** (driver/pulse_cnt.h)，要求 Arduino ESP32 Core 3.0+
 - **ESP32-S3 有 PCNT 单元** (仅 C2/C3 没有)，因此兼容
@@ -86,8 +95,8 @@ HijelHID 和 RotaryEncoderPCNT 可能未发布到 PIO Registry，需用 GitHub .
 - moononournation/GFX Library for Arduino (屏幕) — Registry
 - h2zero/NimBLE-Arduino >=2.3.8 (BLE底层) — Registry
 - esp32async/ESPAsyncWebServer 3.11.1 + esp32async/AsyncTCP (Web配置) — Registry, ESP32-S3编译通过
-- HijelHID_BLEKeyboard (BLE HID键盘) — 手动下载到 lib/
-- RotaryEncoderPCNT (编码器) — 手动下载到 lib/
+- HijelHID_BLEKeyboard (BLE HID键盘, 当前主程序走 USB HID, 此库备用) — 手动下载到 lib/
+- ~~RotaryEncoderPCNT (编码器)~~ — 已移除, platformio.ini 已 lib_ignore
 
 注: ESPAsyncWebServer 用 esp32async/ 版本 (原mathieucarbou已迁移到ESP32Async组织)，
 新版已解决旧版的 NetworkServer.h 兼容问题，无需用 mathieucarbou/ 旧名。
@@ -111,6 +120,52 @@ Expand-Archive "$env:TEMP\<repo>.zip" -DestinationPath "<项目>\lib" -Force
 ```
 注意: RotaryEncoderPCNT 的 library.json 第18行有多余尾逗号 (JSON非法)，需删除。
 
+## 硬件调试 learnings (实机验证, 2026-06)
+
+### 多屏共享硬件 SPI 总线 → 必须手动 CS 片选 (最关键)
+现象: 3 个 ScreenKey (ST7735) 共享同一硬件 SPI 总线, 若每屏各 new 一个
+`Arduino_ESP32SPI` 且把 CS 交给库自动管理, 会出现**随机**花屏 / 某屏不显示 /
+图像破损, 每次上电/烧录表现都不同 (典型时序竞争, 不是确定性 bug)。
+
+根因:
+- 多个 bus 对象共享同一个硬件 SPI 外设 (`_spi = &_spi_bus_array[spi_num]`)。
+- 库在每次 `beginWrite/endWrite` 翻转各自的 CS, 多根共享总线 CS 交错切换。
+- 每个 bus 的 `begin()` 都会 `periph_ll_reset` 复位整个 SPI 外设, 多屏 begin
+  交错执行时会破坏已初始化/已绘制的其他屏。
+
+解决 (已验证稳定):
+- bus 的 CS 参数传 `GFX_NOT_DEFINED`, **不让库管 CS**。
+- 自己控制 CS: 初始化和绘制某块屏时, 全程只拉低该屏 CS、其余拉高 (独占片选),
+  画完再全部拉高。每块屏在"独占片选"状态下完成 `begin()` + 绘制。
+- 这样同一时刻只有一块屏被选中, 后一屏的 begin() 复位不会串到前一屏。
+- 注意: 各屏 DC 引脚不同 (GPIO18/8/7) 时仍需各自的 bus 对象 (DC 由 bus 持有),
+  但 CS 统一手动管理。
+
+### 双 SPI 外设隔离
+- ESP32-S3 有两个可用 SPI 外设: `FSPI`(=0, SPI2) 和 `HSPI`(=1, SPI3)。
+- 两条物理总线应分到不同外设 (`Arduino_ESP32SPI` 构造第 6 参 `spi_num`),
+  否则它们抢同一外设、互相覆盖 SCK/MOSI 引脚 attach, 导致花屏。
+- 本项目: 3×ScreenKey → HSPI (手动片选); 圆形 LCD + 矩形 LCD → FSPI。
+
+### ST7789 1.47" (172×320) 偏移与旋转
+- 列偏移 (col_offset) = 34 (172 居中于 240 宽 GRAM)。
+- `rotation=1` 转为横向 320×172; 绘制坐标用 `width()/height()` 自适应更稳。
+
+### 串口日志走原生 USB CDC, 不是 CH340
+- platformio.ini 设了 `ARDUINO_USB_MODE=0` + `ARDUINO_USB_CDC_ON_BOOT=1`,
+  因此 `Serial` 输出到 **ESP32-S3 原生 USB 口** (`/dev/cu.usbmodemXXXX`,
+  VID `303A:1001`), 而不是 CH340 烧录口 (VID `1A86:55D3`)。
+- CH340 口只用于烧录和复位 (DTR/RTS 接 EN/IO0)。
+- `pio device monitor` 在非交互/管道环境会 termios 报错; 可用 pyserial 直接读。
+
+### 烧录串口号会变
+- 拔插后 `cu.usbmodem5B90160XXXX` 尾号可能变化, platformio.ini 里写死的
+  `upload_port` 会失效。烧录时用 `--upload-port /dev/cu.usbmodemXXXX` 显式指定当前口,
+  或先 `pio device list` 查当前 CH340 口 (VID 1A86:55D3)。
+
 ## 集成验证结果 (库全部编译通过)
-RAM 7.6% (25044/327680), Flash 23.2% (729462/3145728)，资源余量充足。
-BLE + 编码器 + 屏幕驱动 全部编译成功，Exit Code 0。
+当前固件 (USB HID + 5 屏 + 表情动画) 实测: RAM 17.4% (约 57KB/320KB),
+Flash 46.9% (约 3.94MB/8MB, 分区表为 16MB)。资源余量充足, 已烧录实机验证通过。
+
+> 早期纯库编译验证数据为 RAM 7.6% / Flash 23.2%, 随表情动画位图 (~3.3MB PROGMEM)
+> 等内容加入后占用上升, 属正常。
