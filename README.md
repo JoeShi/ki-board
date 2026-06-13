@@ -99,6 +99,8 @@ vibe-coding-keyboard/
 │   ├── main.cpp            # 当前主固件：USB HID + 5屏 UI + 串口 Agent 状态同步
 │   ├── hid_actions.*       # USB HID 快捷键输出封装
 │   ├── agent_registry.*    # Agent 槽位、状态名、Kiro hook JSONL 串口解析
+│   ├── display_hardware.*  # 5 屏对象、SPI/CS、逻辑键到物理键映射
+│   ├── ui_render.*         # ScreenKey、圆屏、矩形屏绘制
 │   ├── kiro_expr_*.cpp     # 圆屏 Kiro 表情帧
 │   ├── kiro_expressions.h  # 表情帧索引
 │   ├── keymap.*            # 备用 Web 配置映射模块
