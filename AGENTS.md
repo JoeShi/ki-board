@@ -74,3 +74,27 @@
 - **webpage.h**: 前端配置页面 (HTML/CSS/JS 嵌入 PROGMEM)
 - **main.cpp**: 主循环整合所有模块
 
+
+## 串口区分 (重要)
+
+ESP32-S3 开发板同时暴露两个 USB 串口，**用途完全不同**：
+
+| 端口 | 用途 | 识别方式 |
+|------|------|---------|
+| `/dev/cu.usbmodem5B901608471` | **CH340 烧录口** (仅用于 esptool 烧录) | VID `1A86:55D3`, ioreg 显示 "USB Single Serial" |
+| `/dev/cu.usbmodem14C19F35A9082` | **ESP32-S3 原生 USB CDC** (Serial 读写) | VID `303A:1001`, ioreg 显示 "Espressif ESP32..." |
+
+- **hook 脚本 `--serial-port` 必须用 CDC 口** (`usbmodem14C19F35A9082`)，因为板子的 `Serial.read()` 只在这个口上工作。
+- **`pio run --target upload --upload-port` 用 CH340 口** (`usbmodem5B901608471`)。
+- 两个口的 usbmodem 号**拔插后可能变化**，通过 `ioreg -p IOUSB -l | grep -A5 Espressif` 或 VID 来确认。
+- pyserial 打开 CDC 口时必须 `dsrdtr=False, rtscts=False` 并显式 `port.dtr=False`，否则可能触发板子复位。
+
+## Hook 集成架构
+
+kiro-cli 的 hook (agentSpawn / userPromptSubmit / stop / postToolUse) 通过 `scripts/kiro_board_hook.py` 将事件转为 JSONL 写入 CDC 串口，板子 `pollRegistrySerial()` 在 loop 中解析并更新 agent tile 显示。
+
+hook 配置在 `.kiro/agents/<agent>.json` 的 `hooks` 字段中（非全局配置）。
+
+**注意事项：**
+- `agentSpawn` 仅在 agent **首次启动**时触发一次，切换回已运行的 agent 不会重新触发。因此板子重启后，需要对该 agent **发一次消息**（触发 `userPromptSubmit`）才能让 tile 显示出来。
+- 多个 agent 几乎同时触发 hook 时可能串口冲突，脚本已内置 lockfile + 重试机制。

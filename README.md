@@ -99,9 +99,15 @@ pio run
 # 编译 + 烧录到开发板
 pio run --target upload
 
+# 焊接交换版：物理 Key1 / Key3 对调
+pio run -e esp32-s3-swap-key1-key3 --target upload
+
 # 查看串口日志
 pio device monitor --baud 115200
 ```
+
+默认 `esp32-s3` 环境适用于当前正常接线版本；`esp32-s3-swap-key1-key3` 会定义
+`KIRO_HW_SWAP_KEY1_KEY3=1`，让逻辑 Key1 使用物理 Key3 的 GPIO，逻辑 Key3 使用物理 Key1 的 GPIO。
 
 > 若 `pio` 命令不可用，使用完整路径：
 > `& "$env:USERPROFILE\.platformio\penv\Scripts\pio.exe" run`
@@ -110,6 +116,55 @@ pio device monitor --baud 115200
 1. 烧录后用 USB 线连接电脑，设备自动识别为键盘 **"Kiro KB"**，无需配对
 2. 按键即可触发对应快捷键
 3. 自定义配置：手机/电脑连接 WiFi 热点 **"KiroKeyboard-Config"**，浏览器打开 `http://192.168.4.1`
+
+### 配置 Kiro CLI Hook（Agent 状态联动）
+
+键盘可以实时显示 Kiro CLI agent 的运行状态。需要配置 hook 将事件发送到板子的 USB CDC 串口。
+
+**1. 找到 ESP32-S3 的 CDC 串口（非烧录口）：**
+
+```bash
+# macOS - 找 Espressif 设备对应的串口
+ioreg -p IOUSB -l | grep -A5 Espressif
+# 看 kUSBSerialNumberString，对应 /dev/cu.usbmodem<序列号>2
+
+# 或直接列出所有串口，选 VID 303A:1001 的那个
+ls /dev/cu.usbmodem*
+```
+
+> ⚠️ 板子有两个 USB 口：CH340 口（VID `1A86:55D3`）仅用于烧录，CDC 口（VID `303A:1001`）用于 Serial 通信。Hook 必须指向 CDC 口。
+
+**2. 在 `.kiro/agents/<agent>.json` 中配置 hooks：**
+
+```json
+{
+  "name": "your-agent",
+  "hooks": {
+    "agentSpawn": [
+      { "command": "python3 scripts/kiro_board_hook.py --agent-name your-agent --serial-port /dev/cu.usbmodem<你的CDC口>" }
+    ],
+    "userPromptSubmit": [
+      { "command": "python3 scripts/kiro_board_hook.py --agent-name your-agent --serial-port /dev/cu.usbmodem<你的CDC口>" }
+    ],
+    "stop": [
+      { "command": "python3 scripts/kiro_board_hook.py --agent-name your-agent --serial-port /dev/cu.usbmodem<你的CDC口>" }
+    ],
+    "postToolUse": [
+      { "command": "python3 scripts/kiro_board_hook.py --agent-name your-agent --serial-port /dev/cu.usbmodem<你的CDC口>" }
+    ]
+  }
+}
+```
+
+**3. 依赖：**
+
+```bash
+pip install pyserial
+```
+
+配置完成后，启动 kiro-cli 切换到对应 agent 时，键盘矩形屏会显示 agent 名称、状态和工作目录。
+
+> 💡 `agentSpawn` 仅在 agent 首次启动时触发一次。板子重启后，需要对该 agent 发一条消息（触发 `userPromptSubmit`）tile 才会重新出现。
 
 ---
 
