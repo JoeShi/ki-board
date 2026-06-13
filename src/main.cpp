@@ -2,19 +2,18 @@
  * Kiro Keyboard - 5-screen agentic coding controller
  *
  * Logical keys:
- *   key_left   -> switch to next Ghostty split (Command + ])
+ *   key_left   -> ESC / stop dictation / exit edit / interrupt
  *   key_middle -> start dictation / send input
- *   key_right  -> ESC / cancel dictation / clear / interrupt
+ *   key_right  -> switch agent / backspace in voice modes
  */
 
 #include <Arduino.h>
-#include <USB.h>
-#include <USBHIDKeyboard.h>
 #include <Arduino_GFX_Library.h>
-#include <ArduinoJson.h>
 #include <cstring>
 #include "pins.h"
 #include "kiro_expressions.h"
+#include "agent_registry.h"
+#include "hid_actions.h"
 
 // Board soldering variant switch:
 //   0 = normal PCB wiring
@@ -23,30 +22,11 @@
 #define KIRO_HW_SWAP_KEY1_KEY3 0
 #endif
 
-static constexpr uint8_t AGENT_COUNT = 4;
 static constexpr uint16_t DEBOUNCE_MS = 35;
 static constexpr uint16_t LONG_PRESS_MS = 700;
-static constexpr uint16_t DOUBLE_CLICK_MS = 420;
-static constexpr uint16_t HID_TAP_MS = 70;
+static constexpr uint16_t BACKSPACE_REPEAT_MS = 120;
 static constexpr uint16_t FRAME_INTERVAL_MS = 1000 / EXPR_FPS;
 static constexpr uint16_t DICTATION_COMMIT_DELAY_MS = 160;
-
-enum AgentState : uint8_t {
-  AGENT_IDLE = 0,
-  AGENT_RUNNING,
-  AGENT_ERROR
-};
-
-struct AgentSlot {
-  char name[24] = "";
-  char sessionId[48] = "";
-  char cwd[64] = "";
-  AgentState state = AGENT_IDLE;
-  bool occupied = false;
-  unsigned long lastUpdateMs = 0;
-};
-
-USBHIDKeyboard Keyboard;
 
 // Round LCD (J5) - GC9D01 160x160
 Arduino_ESP32SPI busRound(PIN_RLCD_DC, PIN_RLCD_CS, PIN_SPIB_CLK, PIN_SPIB_MOSI, -1, FSPI);
@@ -79,7 +59,8 @@ struct ButtonState {
   bool stable = HIGH;
   unsigned long lastChangeMs = 0;
   unsigned long pressedMs = 0;
-  unsigned long lastShortReleaseMs = 0;
+  unsigned long lastRepeatMs = 0;
+  bool repeatFired = false;
 };
 
 struct KeyBinding {
@@ -102,7 +83,7 @@ static uint8_t currentFrame = 0;
 static unsigned long lastFrameMs = 0;
 
 static void refreshUi();
-static const char* agentDisplayName(uint8_t agentIndex);
+static const char* displayNameForAgent(uint8_t agentIndex);
 static AgentState agentStateAt(uint8_t agentIndex);
 
 static KeyBinding bindingForLogical(LogicalKey key) {
@@ -147,15 +128,6 @@ static void selectPhysicalScreen(uint8_t physical) {
   }
 }
 
-static const char* agentStateName(AgentState state) {
-  switch (state) {
-    case AGENT_IDLE: return "Idle";
-    case AGENT_RUNNING: return "Running";
-    case AGENT_ERROR: return "Error";
-  }
-  return "Unknown";
-}
-
 static uint8_t exprForState(AgentState state) {
   if (voiceRecording) return 1;  // wait/listening
   switch (state) {
@@ -166,35 +138,6 @@ static uint8_t exprForState(AgentState state) {
     default:
       return 0;
   }
-}
-
-static void hidTap(uint8_t key) {
-  Keyboard.press(key);
-  delay(HID_TAP_MS);
-  Keyboard.releaseAll();
-  delay(30);
-}
-
-static void sendCommandRightBracket() {
-  Keyboard.press(KEY_LEFT_GUI);
-  Keyboard.press(']');
-  delay(HID_TAP_MS);
-  Keyboard.releaseAll();
-}
-
-static void sendDoubleControl() {
-  hidTap(KEY_LEFT_CTRL);
-  delay(90);
-  hidTap(KEY_LEFT_CTRL);
-}
-
-static void sendClearInput() {
-  Keyboard.press(KEY_LEFT_GUI);
-  Keyboard.press('a');
-  delay(HID_TAP_MS);
-  Keyboard.releaseAll();
-  delay(40);
-  hidTap(KEY_BACKSPACE);
 }
 
 static void drawCenteredText(Arduino_GFX* g, const char* text, int y, uint8_t size, uint16_t color) {
@@ -248,7 +191,7 @@ static void drawSwitchAgentIcon(Arduino_GFX* g) {
   g->drawLine(82, 75, 42, 75, dim);
   g->fillTriangle(42, 67, 42, 83, 26, 75, dim);
   char label[12];
-  snprintf(label, sizeof(label), "NEXT %s", agentDisplayName((selectedAgent + 1) % AGENT_COUNT));
+  snprintf(label, sizeof(label), "NEXT %s", displayNameForAgent((selectedAgent + 1) % AGENT_COUNT));
   drawPillLabel(g, label, yellow);
 }
 
@@ -309,7 +252,17 @@ static void drawKey(LogicalKey key) {
   const bool voiceActive = voiceRecording || voiceEditing;
 
   if (key == KEY_LEFT_LOGICAL) {
-    drawSwitchAgentIcon(g);
+    if (voiceRecording) {
+      drawEscIcon(g, "STOP");
+    } else if (voiceEditing) {
+      drawEscIcon(g, "EXIT");
+    } else if (state == AGENT_RUNNING) {
+      drawEscIcon(g, "STOP");
+    } else if (state == AGENT_ERROR) {
+      drawEscIcon(g, "RESET");
+    } else {
+      drawEscIcon(g, "CANCEL");
+    }
   } else if (key == KEY_MIDDLE_LOGICAL) {
     if (voiceActive) {
       drawCheckIcon(g);
@@ -317,16 +270,10 @@ static void drawKey(LogicalKey key) {
       drawMicIcon(g);
     }
   } else {
-    if (voiceRecording) {
-      drawEscIcon(g, "DICTATE");
-    } else if (voiceEditing) {
+    if (voiceRecording || voiceEditing) {
       drawBackspaceIcon(g);
-    } else if (state == AGENT_RUNNING) {
-      drawEscIcon(g, "STOP");
-    } else if (state == AGENT_ERROR) {
-      drawEscIcon(g, "RESET");
     } else {
-      drawEscIcon(g, "CANCEL");
+      drawSwitchAgentIcon(g);
     }
   }
   skDeselectAll();
@@ -351,15 +298,12 @@ static const char* compactAgentStateName(uint8_t agentIndex) {
   return "Unknown";
 }
 
-static const char* agentDisplayName(uint8_t agentIndex) {
-  if (!agentSlots[agentIndex].occupied || agentSlots[agentIndex].name[0] == '\0') {
-    return "EMPTY";
-  }
-  return agentSlots[agentIndex].name;
+static const char* displayNameForAgent(uint8_t agentIndex) {
+  return agentDisplayName(agentSlots, agentIndex);
 }
 
 static AgentState agentStateAt(uint8_t agentIndex) {
-  return agentSlots[agentIndex].occupied ? agentSlots[agentIndex].state : AGENT_IDLE;
+  return ::agentStateAt(agentSlots, agentIndex);
 }
 
 static void drawAgentName(Arduino_GFX* g, const char* name, int centerX, int y, uint16_t color) {
@@ -372,118 +316,6 @@ static void drawAgentName(Arduino_GFX* g, const char* name, int centerX, int y, 
   g->getTextBounds(name, 0, y, &x1, &y1, &w, &h);
   g->setCursor(centerX - (int)w / 2, y);
   g->print(name);
-}
-
-static uint8_t findAgentSlotByName(const char* name) {
-  for (uint8_t i = 0; i < AGENT_COUNT; i++) {
-    if (agentSlots[i].occupied && strcmp(agentSlots[i].name, name) == 0) {
-      return i;
-    }
-  }
-  return AGENT_COUNT;
-}
-
-static uint8_t findAgentSlotBySessionId(const char* sid) {
-  if (!sid || !sid[0]) return AGENT_COUNT;
-  for (uint8_t i = 0; i < AGENT_COUNT; i++) {
-    if (agentSlots[i].occupied && strcmp(agentSlots[i].sessionId, sid) == 0) {
-      return i;
-    }
-  }
-  return AGENT_COUNT;
-}
-
-static uint8_t chooseAgentSlot(const char* name, const char* sessionId) {
-  // Priority: match by session_id first, then by name, then find empty/oldest
-  uint8_t bySession = findAgentSlotBySessionId(sessionId);
-  if (bySession < AGENT_COUNT) return bySession;
-
-  uint8_t byName = findAgentSlotByName(name);
-  if (byName < AGENT_COUNT) return byName;
-
-  for (uint8_t i = 0; i < AGENT_COUNT; i++) {
-    if (!agentSlots[i].occupied) return i;
-  }
-
-  uint8_t oldest = 0;
-  unsigned long oldestUpdate = agentSlots[0].lastUpdateMs;
-  for (uint8_t i = 1; i < AGENT_COUNT; i++) {
-    if (agentSlots[i].lastUpdateMs < oldestUpdate) {
-      oldest = i;
-      oldestUpdate = agentSlots[i].lastUpdateMs;
-    }
-  }
-  return oldest;
-}
-
-static void applyRegistryEvent(const char* agentName, AgentState state, const char* sessionId, const char* cwd) {
-  if (!agentName || !agentName[0]) {
-    return;
-  }
-  uint8_t slot = chooseAgentSlot(agentName, sessionId);
-  AgentSlot& agent = agentSlots[slot];
-  strncpy(agent.name, agentName, sizeof(agent.name) - 1);
-  agent.name[sizeof(agent.name) - 1] = '\0';
-  if (sessionId && sessionId[0]) {
-    strncpy(agent.sessionId, sessionId, sizeof(agent.sessionId) - 1);
-    agent.sessionId[sizeof(agent.sessionId) - 1] = '\0';
-  }
-  if (cwd && cwd[0]) {
-    strncpy(agent.cwd, cwd, sizeof(agent.cwd) - 1);
-    agent.cwd[sizeof(agent.cwd) - 1] = '\0';
-  }
-  agent.state = state;
-  agent.occupied = true;
-  agent.lastUpdateMs = millis();
-  if (selectedAgent >= AGENT_COUNT) {
-    selectedAgent = 0;
-  }
-  Serial.printf("[REG] %s -> %s\n", agent.name, agentStateName(state));
-  refreshUi();
-}
-
-static void pollRegistrySerial() {
-  static char line[256];
-  static size_t len = 0;
-  while (Serial.available() > 0) {
-    int ch = Serial.read();
-    if (ch < 0) {
-      break;
-    }
-    if (ch == '\r') {
-      continue;
-    }
-    if (ch == '\n') {
-      line[len] = '\0';
-      if (len > 0 && line[0] == '{') {
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, line);
-        if (!err) {
-          const char* type = doc["type"] | "";
-          if (strcmp(type, "agent_state") == 0) {
-            const char* agentName = doc["agent_name"] | "";
-            const char* stateText = doc["state"] | "";
-            const char* sessionId = doc["session_id"] | "";
-            const char* cwd = doc["cwd"] | "";
-            AgentState state = AGENT_IDLE;
-            if (strcmp(stateText, "running") == 0) {
-              state = AGENT_RUNNING;
-            } else if (strcmp(stateText, "error") == 0) {
-              state = AGENT_ERROR;
-            }
-            applyRegistryEvent(agentName, state, sessionId, cwd);
-          }
-        }
-      }
-      len = 0;
-      continue;
-    }
-    if (len + 1 < sizeof(line)) {
-      line[len++] = static_cast<char>(ch);
-    } else {
-      len = 0;
-    }
-  }
 }
 
 static void drawMiniWave(int x, int y, int w, uint16_t color) {
@@ -513,7 +345,7 @@ static void drawAgentTile(uint8_t agentIndex, int x, int y, int w, int h) {
     rectLcd.print(">");
   }
 
-  drawAgentName(&rectLcd, agentDisplayName(agentIndex), x + w / 2, y + 10, title);
+  drawAgentName(&rectLcd, displayNameForAgent(agentIndex), x + w / 2, y + 10, title);
 
   rectLcd.setTextSize(1);
   rectLcd.setTextColor(stateColor);
@@ -591,6 +423,11 @@ static void refreshUi() {
 }
 
 static void switchAgent() {
+  if (voiceRecording) {
+    hidTap(KEY_ESC);
+    delay(DICTATION_COMMIT_DELAY_MS);
+    Serial.printf("[VOICE] Agent %d stopped recording before switch\n", selectedAgent + 1);
+  }
   selectedAgent = (selectedAgent + 1) % AGENT_COUNT;
   voiceRecording = false;
   voiceEditing = false;
@@ -612,9 +449,10 @@ static void sendVoiceInput() {
   hidTap(KEY_RETURN);
   voiceRecording = false;
   voiceEditing = false;
-  agentSlots[selectedAgent].state = AGENT_RUNNING;
-  agentSlots[selectedAgent].occupied = true;
-  agentSlots[selectedAgent].lastUpdateMs = millis();
+  if (agentSlots[selectedAgent].occupied) {
+    agentSlots[selectedAgent].state = AGENT_RUNNING;
+    agentSlots[selectedAgent].lastUpdateMs = millis();
+  }
   Serial.printf("[VOICE] Agent %d sent input\n", selectedAgent + 1);
   refreshUi();
 }
@@ -647,7 +485,7 @@ static void handleMiddleShort() {
   }
 }
 
-static void handleRightShort(bool doubleClick) {
+static void handleLeftShort() {
   AgentState state = agentStateAt(selectedAgent);
   if (voiceRecording) {
     stopDictationForEditing();
@@ -655,12 +493,10 @@ static void handleRightShort(bool doubleClick) {
   }
 
   if (voiceEditing) {
-    if (doubleClick) {
-      clearVoiceInput();
-      return;
-    }
-    hidTap(KEY_BACKSPACE);
-    Serial.println("[VOICE] Backspace");
+    hidTap(KEY_ESC);
+    voiceEditing = false;
+    Serial.printf("[VOICE] Agent %d exited edit mode\n", selectedAgent + 1);
+    refreshUi();
     return;
   }
 
@@ -674,25 +510,51 @@ static void handleRightShort(bool doubleClick) {
   refreshUi();
 }
 
-static void handleRightLong() {
-  if (voiceRecording || voiceEditing) {
-    clearVoiceInput();
+static void backspaceFromRecording() {
+  hidTap(KEY_ESC);
+  delay(DICTATION_COMMIT_DELAY_MS);
+  voiceRecording = false;
+  voiceEditing = true;
+  hidTap(KEY_BACKSPACE);
+  Serial.printf("[VOICE] Agent %d stopped dictation and backspaced\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void handleRightShort() {
+  if (voiceRecording) {
+    backspaceFromRecording();
     return;
   }
 
-  handleRightShort(false);
+  if (voiceEditing) {
+    hidTap(KEY_BACKSPACE);
+    Serial.println("[VOICE] Backspace");
+    return;
+  }
+
+  switchAgent();
+}
+
+static void handleRightLong() {
+  if (voiceRecording) {
+    backspaceFromRecording();
+    return;
+  }
+
+  if (voiceEditing) {
+    hidTap(KEY_BACKSPACE);
+    Serial.println("[VOICE] Backspace");
+    return;
+  }
+
+  handleRightShort();
 }
 
 static constexpr uint16_t AGENT_REMOVE_HOLD_MS = 5000;
 
 static void removeCurrentAgentSlot() {
   AgentSlot& agent = agentSlots[selectedAgent];
-  agent.name[0] = '\0';
-  agent.sessionId[0] = '\0';
-  agent.cwd[0] = '\0';
-  agent.state = AGENT_IDLE;
-  agent.occupied = false;
-  agent.lastUpdateMs = 0;
+  clearAgentSlot(agent);
   Serial.printf("[AGENT] Removed slot %d\n", selectedAgent + 1);
   refreshUi();
 }
@@ -700,22 +562,40 @@ static void removeCurrentAgentSlot() {
 static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
   const bool longPress = heldMs >= LONG_PRESS_MS;
   if (key == KEY_LEFT_LOGICAL) {
-    if (heldMs >= AGENT_REMOVE_HOLD_MS) {
-      removeCurrentAgentSlot();
-    } else {
-      switchAgent();
-    }
+    handleLeftShort();
   } else if (key == KEY_MIDDLE_LOGICAL) {
     handleMiddleShort();
   } else if (longPress) {
+    if (buttons[KEY_RIGHT_LOGICAL].repeatFired) {
+      return;
+    }
+    if (!voiceRecording && !voiceEditing && heldMs >= AGENT_REMOVE_HOLD_MS) {
+      removeCurrentAgentSlot();
+      return;
+    }
     handleRightLong();
   } else {
-    unsigned long now = millis();
-    const bool wasVoiceEditing = voiceEditing;
-    bool doubleClick = wasVoiceEditing && (now - buttons[KEY_RIGHT_LOGICAL].lastShortReleaseMs <= DOUBLE_CLICK_MS);
-    buttons[KEY_RIGHT_LOGICAL].lastShortReleaseMs = wasVoiceEditing ? now : 0;
-    handleRightShort(doubleClick);
+    handleRightShort();
   }
+}
+
+static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now) {
+  if (key != KEY_RIGHT_LOGICAL || !voiceEditing || btn.stable != LOW) {
+    return;
+  }
+
+  if (now - btn.pressedMs < LONG_PRESS_MS) {
+    return;
+  }
+
+  if (btn.lastRepeatMs != 0 && now - btn.lastRepeatMs < BACKSPACE_REPEAT_MS) {
+    return;
+  }
+
+  hidTap(KEY_BACKSPACE);
+  btn.repeatFired = true;
+  btn.lastRepeatMs = millis();
+  Serial.println("[VOICE] Backspace repeat");
 }
 
 static void pollButtons() {
@@ -734,10 +614,14 @@ static void pollButtons() {
       btn.stable = raw;
       if (btn.stable == LOW) {
         btn.pressedMs = now;
+        btn.lastRepeatMs = 0;
+        btn.repeatFired = false;
       } else {
         handleButtonRelease(key, now - btn.pressedMs);
       }
     }
+
+    handleHeldButton(key, btn, millis());
   }
 }
 
@@ -766,8 +650,7 @@ static void initScreenKeys() {
 void setup() {
   Serial.begin(115200);
 
-  Keyboard.begin();
-  USB.begin();
+  hidBegin();
 
   pinMode(PIN_RLCD_BL, OUTPUT);
   digitalWrite(PIN_RLCD_BL, HIGH);
@@ -816,6 +699,8 @@ void loop() {
     drawExprFrame();
   }
 
-  pollRegistrySerial();
+  if (pollAgentRegistrySerial(Serial, agentSlots, selectedAgent)) {
+    refreshUi();
+  }
   pollButtons();
 }

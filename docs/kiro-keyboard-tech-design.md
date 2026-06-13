@@ -88,16 +88,19 @@ AgentState stateBeforeVoice;
 录音期间：
 
 1. key_middle 显示对勾。
-2. key_right 显示 ESC / 取消录音。
-3. 矩形屏在当前 Agent 区域显示 `REC` 和波浪线。
-4. 圆屏保留当前 Agent 表情，并叠加 Listening 语义。
+2. key_left 显示 STOP / ESC，按下后停止语音输入并进入编辑态。
+3. key_right 显示退格，按下后停止语音输入、删除一个字符并进入编辑态。
+4. 矩形屏在当前 Agent 区域显示 `REC` 和波浪线。
+5. 圆屏保留当前 Agent 表情，并叠加 Listening 语义。
 
 进入编辑态后：
 
 1. key_middle 继续显示对勾。
-2. key_right 继续显示退格。
-3. 矩形屏在当前 Agent 区域显示 `EDIT`。
-4. key_right 短按继续发送 Backspace，双击清空输入并退出编辑态。
+2. key_left 显示 EXIT / ESC，按下后退出编辑态并回到普通状态。
+3. key_right 继续显示退格。
+4. 矩形屏在当前 Agent 区域显示 `EDIT`。
+5. key_right 短按发送一次 Backspace，长按按固定间隔连续发送 Backspace。
+6. 编辑态不使用双击清空输入，避免连续单击删除字符时误触。
 
 ### 4.3 状态流转
 
@@ -109,13 +112,17 @@ stateDiagram-v2
     Running --> VoiceRecording: key_middle / 双击 Control
 
     VoiceRecording --> Running: key_middle / Enter
-    VoiceRecording --> VoiceEdit: key_right short / ESC
+    VoiceRecording --> VoiceEdit: key_left short / ESC
+    VoiceRecording --> VoiceEdit: key_right short / ESC, then Backspace
     VoiceEdit --> Running: key_middle / Enter
     VoiceEdit --> VoiceEdit: key_right short / Backspace
-    VoiceEdit --> StateBeforeVoice: key_right double click / Cmd+A + Backspace
+    VoiceEdit --> VoiceEdit: key_right long / repeat Backspace
+    VoiceEdit --> StateBeforeVoice: key_left / ESC
 
-    Idle --> Idle: key_right / ESC
-    Running --> Idle: key_right / ESC
+    Idle --> Idle: key_left / ESC
+    Running --> Idle: key_left / ESC
+    Idle --> NextAgent: key_right / Command+]
+    Running --> NextAgent: key_right / Command+]
 ```
 
 ## 5. USB HID 映射
@@ -127,7 +134,8 @@ stateDiagram-v2
 | 发送当前输入 | `Enter` |
 | 停止语音输入并进入编辑态 | `ESC` |
 | 删除一个字符 | `Backspace` |
-| 清空当前输入 | `Command + A`，然后 `Backspace` |
+| 停止语音输入并删除一个字符 | `ESC`，然后 `Backspace` |
+| 连续删除字符 | 按固定间隔重复 `Backspace` |
 | 取消 / 打断 | `ESC` |
 
 ## 6. 屏幕渲染
@@ -175,9 +183,9 @@ stateDiagram-v2
 
 | 逻辑键 | 普通状态显示 | 特殊状态显示 |
 |--------|--------------|--------------|
-| key_left | Agent 切换图标 + 下一个 Agent 名字 | 不变 |
+| key_left | ESC / Cancel / Stop | Recording 时显示 STOP / ESC；VoiceEdit 时显示 EXIT / ESC |
 | key_middle | Mic | Recording / VoiceEdit 时显示 Check |
-| key_right | ESC / Stop / Clear | Recording 时显示 ESC；VoiceEdit 时显示 Backspace |
+| key_right | Agent 切换图标 + 下一个 Agent 名字 | Recording / VoiceEdit 时显示 Backspace |
 
 ## 7. 按键处理
 
@@ -192,7 +200,10 @@ stateDiagram-v2
 
 1. 短按阈值：释放时小于 `LONG_PRESS_MS`。
 2. 长按阈值：释放时大于等于 `LONG_PRESS_MS`。
-3. key_right 在 VoiceEdit 状态下双击清空输入，并退出 VoiceEdit。
+3. key_right 在 VoiceEdit 状态下短按删除一个字符，长按连续删除字符。
+4. VoiceRecording 状态下按 key_left 时，发送 ESC 停止系统语音输入并进入 VoiceEdit。
+5. VoiceEdit 状态下按 key_left 时，只发送 ESC 并退出编辑态，不切换 Agent，不触发槽位清除。
+6. 普通状态下按 key_right 时，发送 `Command + ]` 切换 Agent；VoiceRecording / VoiceEdit 状态下不允许切换 Agent。
 
 ## 8. 后续扩展点
 
