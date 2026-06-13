@@ -1,7 +1,7 @@
 /**
  * webconfig.h - Web 配置服务
  *
- * ESP32-C6 启动 WiFi AP 热点 + 异步 Web 服务器,
+ * ESP32-S3 启动 WiFi AP 热点 + 异步 Web 服务器,
  * 提供配置页面和 REST API, 让用户在浏览器中自定义按键映射。
  */
 

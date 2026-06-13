@@ -20,8 +20,8 @@ EncoderMode g_encoderModes[NUM_ENCODER_MODES];
 
 void keymapLoadDefaults() {
     // --- 4个按键 ---
-    // Key1: 打开AI聊天 (Ctrl+L)
-    g_keyActions[0] = ACTION_HOTKEY(KEY_MOD_LCTRL, KEY_L, "AI Chat");
+    // Key1: 语音输入 (双击 Control 唤起)
+    g_keyActions[0] = ACTION_DOUBLE_TAP(KEY_LEFT_CTRL, "Voice");
     // Key2: 接受AI建议 (Tab)
     g_keyActions[1] = ACTION_HOTKEY(0, KEY_TAB, "Accept");
     // Key3: 拒绝AI建议 (Escape)

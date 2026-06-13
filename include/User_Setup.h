@@ -1,7 +1,7 @@
 /**
- * TFT_eSPI 用户配置文件
+ * TFT_eSPI 用户配置文件 (legacy, 项目已改用 Arduino_GFX)
  * 针对 Waveshare 0.85inch ScreenKey Module B (ST7735, 128x128)
- * 主控: ESP32-C6
+ * 主控: ESP32-S3
  * 
  * 注意: 此文件需要在 platformio.ini 的 build_flags 中指定路径
  */
@@ -9,8 +9,8 @@
 #ifndef USER_SETUP_H
 #define USER_SETUP_H
 
-// ==================== ESP32-C6 兼容性修复 ====================
-// ESP32-C6 没有 VSPI/HSPI，只有 SPI2_HOST
+// ==================== ESP32-S3 SPI 兼容性 ====================
+// ESP32-S3 使用 FSPI (SPI2_HOST)
 #ifndef VSPI
 #define VSPI SPI2_HOST
 #endif
@@ -28,13 +28,13 @@
 // ST7735 Tab 类型 (根据实际屏幕调整)
 #define ST7735_GREENTAB128
 
-// ==================== ESP32-C6 引脚定义 ====================
-#define TFT_MOSI    7
-#define TFT_SCLK    6
-#define TFT_CS      8    // 默认使用CS0, 多屏时需要手动切换
-#define TFT_DC      4
-#define TFT_RST     5
-#define TFT_BL      3
+// ==================== ESP32-S3 引脚定义 ====================
+#define TFT_MOSI    11
+#define TFT_SCLK    12
+#define TFT_CS      10   // 默认使用CS0, 多屏时需要手动切换
+#define TFT_DC      13
+#define TFT_RST     14
+#define TFT_BL      21
 
 // ==================== SPI 频率 ====================
 #define SPI_FREQUENCY       27000000  // 27MHz SPI clock
