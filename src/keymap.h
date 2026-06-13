@@ -17,6 +17,7 @@ enum class ActionType : uint8_t {
     HOTKEY,         // 普通快捷键 (修饰键 + 主键)
     MEDIA,          // 媒体/消费类键 (音量等)
     MODE_SWITCH,    // 切换旋钮模式 (仅旋钮短按使用)
+    DOUBLE_TAP,     // 连按两次同一键 (如双击 Control 唤起语音输入)
 };
 
 // 一个按键动作的定义
@@ -39,6 +40,7 @@ struct EncoderMode {
 #define ACTION_HOTKEY(mod, key, lbl)  { ActionType::HOTKEY, (mod), (key), 0, (lbl) }
 #define ACTION_MEDIA(media, lbl)      { ActionType::MEDIA, 0, 0, (media), (lbl) }
 #define ACTION_MODE_SWITCH(lbl)       { ActionType::MODE_SWITCH, 0, 0, 0, (lbl) }
+#define ACTION_DOUBLE_TAP(key, lbl)   { ActionType::DOUBLE_TAP, 0, (key), 0, (lbl) }
 #define ACTION_NONE()                 { ActionType::NONE, 0, 0, 0, "" }
 
 // === 全局键映射配置 (运行时可被Web配置覆盖) ===

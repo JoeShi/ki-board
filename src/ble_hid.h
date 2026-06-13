@@ -15,8 +15,11 @@ void bleHidBegin();
 // 是否已连接到主机
 bool bleHidConnected();
 
-// 发送一个按键动作 (HOTKEY 或 MEDIA), MODE_SWITCH/NONE 会被忽略
+// 发送一个按键动作 (HOTKEY/MEDIA/DOUBLE_TAP), MODE_SWITCH/NONE 会被忽略
 // 返回 true 表示实际发送了按键
 bool bleHidSendAction(const KeyAction& action);
+
+// 发送单个按键 (无修饰键)
+bool bleHidSendKey(uint8_t keycode);
 
 #endif // BLE_HID_H

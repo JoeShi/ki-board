@@ -1,135 +1,167 @@
 /**
- * Kiro 快捷键盘 - 主程序
+ * Kiro Keyboard - USB HID with Voice Input Toggle + Animated Expressions
  *
- * 硬件: ESP32-C6-DEV-KIT-N16
- * 功能: 4个屏幕按键 + 1个旋转编码器, 通过BLE HID发送快捷键触发Kiro功能
- *
- * 当前实现 (阶段3整合): 按键 + 旋钮 + BLE HID
- * (屏幕显示在后续阶段加入)
+ * Key1: Toggle between mic (double-tap Control) and check (Enter+ESC)
+ * Round LCD: 3 animated expressions cycling every 10 seconds
  */
 
 #include <Arduino.h>
-#include "config.h"
-#include "keymap.h"
-#include "buttons.h"
-#include "encoder_input.h"
-#include "ble_hid.h"
-#include "display.h"
-#include "webconfig.h"
+#include <USB.h>
+#include <USBHIDKeyboard.h>
+#include <Arduino_GFX_Library.h>
+#include "kiro_expressions.h"
 
-void handleButtonEvent(uint8_t index, ButtonEvent ev);
-void handleEncoderTurn(EncoderTurn turn);
-void refreshAllKeyDisplays();
-void onConfigChanged();
+// USB HID Keyboard
+USBHIDKeyboard Keyboard;
 
-// 4个按键的显示颜色
-static const uint16_t s_keyColors[NUM_KEYS] = {
-    COLOR_CYAN, COLOR_GREEN, COLOR_RED, COLOR_ORANGE
-};
+// Round LCD (J5) - GC9D01 160x160
+#define RLCD_MOSI  12
+#define RLCD_CLK   11
+#define RLCD_CS    16
+#define RLCD_DC    6
+#define RLCD_RST   40
+#define RLCD_BL    47
+
+// ScreenKey 1 (J1)
+#define SK1_MOSI   9
+#define SK1_CLK    10
+#define SK1_CS     13
+#define SK1_DC     18
+#define SK1_RST    4
+#define SK1_BL     42
+#define SK1_KEY    1
+
+Arduino_ESP32SPI busB(RLCD_DC, RLCD_CS, RLCD_CLK, RLCD_MOSI, -1);
+Arduino_GC9D01  roundLcd(&busB, RLCD_RST, 0, false);
+
+Arduino_ESP32SPI busA(SK1_DC, SK1_CS, SK1_CLK, SK1_MOSI, -1);
+Arduino_ST7735   sk1(&busA, SK1_RST, 0, true, 128, 128, 2, 3, 0, 0);
+
+// Expression animation state
+static uint8_t currentExpr = 0;        // 0=idle, 1=wait, 2=work
+static uint8_t currentFrame = 0;
+static unsigned long lastFrameMs = 0;
+static unsigned long exprStartMs = 0;
+#define EXPR_SWITCH_MS 10000            // 10 seconds per expression
+#define FRAME_INTERVAL_MS (1000 / EXPR_FPS)  // 250ms per frame at 4fps
+
+// Offset to center 120x120 in 160x160
+#define EXPR_X_OFFSET ((160 - EXPR_FRAME_W) / 2)
+#define EXPR_Y_OFFSET ((160 - EXPR_FRAME_H) / 2)
+
+// Key1 state
+static bool micMode = true;
+static bool lastBtn = HIGH;
+static unsigned long lastDebounce = 0;
+
+void drawMic() {
+  sk1.fillScreen(0x0000);
+  uint16_t col = 0x07FF;
+  sk1.fillRoundRect(48, 25, 32, 45, 16, col);
+  sk1.fillRect(58, 70, 12, 15, col);
+  sk1.drawRoundRect(38, 50, 52, 40, 20, col);
+  sk1.fillRect(50, 85, 28, 4, col);
+  sk1.setTextColor(0xFFFF);
+  sk1.setTextSize(1);
+  sk1.setCursor(48, 100);
+  sk1.print("Voice");
+}
+
+void drawCheck() {
+  sk1.fillScreen(0x0000);
+  uint16_t col = 0x07E0;
+  for (int i = 0; i < 4; i++) {
+    sk1.drawLine(30, 60+i, 55, 85+i, col);
+    sk1.drawLine(55, 85+i, 98, 35+i, col);
+  }
+  sk1.setTextColor(0xFFFF);
+  sk1.setTextSize(1);
+  sk1.setCursor(48, 100);
+  sk1.print("Send");
+}
+
+void drawExprFrame() {
+  const uint16_t* frame = kiro_expressions[currentExpr][currentFrame];
+  roundLcd.draw16bitRGBBitmap(EXPR_X_OFFSET, EXPR_Y_OFFSET, frame, EXPR_FRAME_W, EXPR_FRAME_H);
+}
 
 void setup() {
-    Serial.begin(115200);
-    delay(500);
-    Serial.println();
-    Serial.println("====================================");
-    Serial.println("  " DEVICE_NAME " booting...");
-    Serial.println("====================================");
+  Serial.begin(115200);
 
-    // 1. 加载按键映射 (优先从 NVS, 否则默认值)
-    keymapLoad();
-    Serial.println("[MAIN] Keymap loaded");
+  // USB HID
+  Keyboard.begin();
+  USB.begin();
 
-    // 2. 初始化输入
-    buttonsBegin();
-    encoderBegin();
+  // Round LCD
+  pinMode(RLCD_BL, OUTPUT);
+  digitalWrite(RLCD_BL, HIGH);
+  roundLcd.begin();
+  roundLcd.fillScreen(0x0000);
 
-    // 3. 初始化屏幕并显示各按键功能
-    displayBegin();
-    refreshAllKeyDisplays();
+  // ScreenKey 1
+  pinMode(SK1_BL, OUTPUT);
+  digitalWrite(SK1_BL, HIGH);
+  pinMode(SK1_KEY, INPUT_PULLUP);
+  sk1.begin();
+  drawMic();
 
-    // 4. 启动 BLE HID
-    bleHidBegin();
+  // Draw first frame
+  drawExprFrame();
+  lastFrameMs = millis();
+  exprStartMs = millis();
 
-    // 5. 启动 Web 配置服务 (WiFi AP + HTTP)
-    webConfigBegin(onConfigChanged);
-
-    Serial.println("[MAIN] Setup complete. Waiting for BLE connection...");
-}
-
-// 刷新所有按键屏幕, 显示当前映射的功能标签
-void refreshAllKeyDisplays() {
-    for (uint8_t i = 0; i < NUM_KEYS; i++) {
-        displayShowKey(i, g_keyActions[i].label, s_keyColors[i]);
-    }
-}
-
-// Web 端保存新配置后的回调: 刷新屏幕显示
-void onConfigChanged() {
-    Serial.println("[MAIN] Config changed, refreshing displays");
-    refreshAllKeyDisplays();
+  Serial.println("Kiro KB ready (USB HID + expressions)");
 }
 
 void loop() {
-    // --- 扫描按键 ---
-    ButtonEvent events[TOTAL_BUTTONS];
-    uint8_t n = buttonsScan(events, TOTAL_BUTTONS);
-    for (uint8_t i = 0; i < n; i++) {
-        if (events[i] != ButtonEvent::NONE) {
-            handleButtonEvent(i, events[i]);
-        }
+  unsigned long now = millis();
+
+  // --- Expression animation: advance frame ---
+  if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
+    lastFrameMs = now;
+    currentFrame = (currentFrame + 1) % EXPR_FRAME_COUNT;
+    drawExprFrame();
+  }
+
+  // --- Switch expression every 10 seconds ---
+  if (now - exprStartMs >= EXPR_SWITCH_MS) {
+    exprStartMs = now;
+    currentExpr = (currentExpr + 1) % EXPR_COUNT;
+    currentFrame = 0;
+    roundLcd.fillScreen(0x0000);  // clear before new expression
+    drawExprFrame();
+  }
+
+  // --- Key1 toggle: mic <-> check ---
+  bool btn = digitalRead(SK1_KEY);
+  if (btn == LOW && lastBtn == HIGH && (now - lastDebounce > 200)) {
+    lastDebounce = now;
+
+    if (micMode) {
+      // Double-tap Control to invoke voice input
+      Keyboard.press(KEY_LEFT_CTRL);
+      delay(80);
+      Keyboard.releaseAll();
+      delay(80);
+      Keyboard.press(KEY_LEFT_CTRL);
+      delay(80);
+      Keyboard.releaseAll();
+      Serial.println("Sent: Double Control");
+      micMode = false;
+      drawCheck();
+    } else {
+      // Enter to confirm, then ESC to exit dictation
+      Keyboard.press(KEY_RETURN);
+      delay(80);
+      Keyboard.releaseAll();
+      delay(200);
+      Keyboard.press(KEY_ESC);
+      delay(80);
+      Keyboard.releaseAll();
+      Serial.println("Sent: Enter + ESC");
+      micMode = true;
+      drawMic();
     }
-
-    // --- 读取旋钮旋转 ---
-    EncoderTurn turn = encoderPoll();
-    if (turn != EncoderTurn::NONE) {
-        handleEncoderTurn(turn);
-    }
-
-    delay(5);
-}
-
-// 处理按键事件 (索引 0..NUM_KEYS-1 为屏幕按键, NUM_KEYS 为旋钮按压)
-void handleButtonEvent(uint8_t index, ButtonEvent ev) {
-    if (index < NUM_KEYS) {
-        // 屏幕按键: 短按发送对应动作
-        if (ev == ButtonEvent::SHORT_PRESS) {
-            Serial.printf("[MAIN] Key%d short press\n", index);
-            displayFlashKey(index);                            // 按下反馈
-            bleHidSendAction(g_keyActions[index]);
-            displayShowKey(index, g_keyActions[index].label,   // 恢复显示
-                           s_keyColors[index]);
-        }
-        // (屏幕按键长按暂未定义功能, 预留)
-    } else if (index == ENCODER_BTN_INDEX) {
-        // 旋钮按压
-        if (ev == ButtonEvent::SHORT_PRESS) {
-            // 短按: 切换模式
-            Serial.println("[MAIN] Encoder short press -> switch mode");
-            if (g_encoderShortPress.type == ActionType::MODE_SWITCH) {
-                uint8_t m = encoderNextMode();
-                Serial.printf("[MAIN] Now in mode: %s\n", g_encoderModes[m].label);
-                displayShowEncoderMode(g_encoderModes[m].label);
-            } else {
-                bleHidSendAction(g_encoderShortPress);
-            }
-        } else if (ev == ButtonEvent::LONG_PRESS) {
-            // 长按: 发送长按动作 (默认保存)
-            Serial.println("[MAIN] Encoder long press");
-            bleHidSendAction(g_encoderLongPress);
-        }
-    }
-}
-
-// 处理旋钮旋转
-void handleEncoderTurn(EncoderTurn turn) {
-    uint8_t mode = encoderCurrentMode();
-    const EncoderMode& m = g_encoderModes[mode];
-
-    if (turn == EncoderTurn::CW) {
-        Serial.printf("[MAIN] Encoder CW (mode=%s)\n", m.label);
-        bleHidSendAction(m.cw);
-    } else if (turn == EncoderTurn::CCW) {
-        Serial.printf("[MAIN] Encoder CCW (mode=%s)\n", m.label);
-        bleHidSendAction(m.ccw);
-    }
+  }
+  lastBtn = btn;
 }

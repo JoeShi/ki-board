@@ -1,39 +1,57 @@
 /**
- * 引脚定义头文件
- * ESP32-C6-DEV-KIT-N16 引脚分配
+ * Pin definitions for ESP32-S3 + PCB ESP32_5SCREEN_V0.1
+ * 3x ScreenKey (SPI-A) + 0.71" round LCD + 1.47" rect LCD (SPI-B)
  */
 
 #ifndef PINS_H
 #define PINS_H
 
-// SPI Bus (4屏共享)
-#define PIN_SPI_MOSI    7
-#define PIN_SPI_CLK     6
+// === SPI Bus A: 3x ScreenKey (ST7735, shared MOSI/CLK) ===
+#define PIN_SPIA_MOSI   9
+#define PIN_SPIA_CLK    10
 
-// LCD Chip Select (每屏独立)
-#define PIN_LCD_CS0     8
-#define PIN_LCD_CS1     9
-#define PIN_LCD_CS2     10
-#define PIN_LCD_CS3     11
+// ScreenKey 1 (J1)
+#define PIN_SK1_CS      13
+#define PIN_SK1_DC      18
+#define PIN_SK1_RST     4
+#define PIN_SK1_BL      42
+#define PIN_SK1_KEY     1
 
-// LCD Control (共享)
-#define PIN_LCD_DC      4
-#define PIN_LCD_RST     5
-#define PIN_LCD_BL      3
+// ScreenKey 2 (J11)
+#define PIN_SK2_CS      14
+#define PIN_SK2_DC      8
+#define PIN_SK2_RST     38
+#define PIN_SK2_BL      43
+#define PIN_SK2_KEY     2
 
-// Key Inputs (每键独立, 内部上拉, 按下为LOW)
-#define PIN_KEY0        0
-#define PIN_KEY1        1
-#define PIN_KEY2        2
-#define PIN_KEY3        15
+// ScreenKey 3 (J12)
+#define PIN_SK3_CS      15
+#define PIN_SK3_DC      7
+#define PIN_SK3_RST     39
+#define PIN_SK3_BL      44
+#define PIN_SK3_KEY     21
 
-// EC11 Rotary Encoder
-#define PIN_EC11_A      18
-#define PIN_EC11_B      19
-#define PIN_EC11_SW     20   // 按压开关
+// === SPI Bus B: Round LCD + Rect LCD (shared MOSI/CLK) ===
+#define PIN_SPIB_MOSI   12
+#define PIN_SPIB_CLK    11
 
-// Pin arrays for iteration
-static const int LCD_CS_PINS[] = {PIN_LCD_CS0, PIN_LCD_CS1, PIN_LCD_CS2, PIN_LCD_CS3};
-static const int KEY_PINS[] = {PIN_KEY0, PIN_KEY1, PIN_KEY2, PIN_KEY3};
+// Round LCD 0.71" (J5, GC9D01, 160x160)
+#define PIN_RLCD_CS     16
+#define PIN_RLCD_DC     6
+#define PIN_RLCD_RST    40
+#define PIN_RLCD_BL     47
+
+// Rect LCD 1.47" (J6, ST7789V3, 172x320)
+#define PIN_RECT_CS     17
+#define PIN_RECT_DC     5
+#define PIN_RECT_RST    41
+#define PIN_RECT_BL     48
+
+// === Pin arrays for iteration ===
+static const int SK_CS_PINS[]  = {PIN_SK1_CS, PIN_SK2_CS, PIN_SK3_CS};
+static const int SK_DC_PINS[]  = {PIN_SK1_DC, PIN_SK2_DC, PIN_SK3_DC};
+static const int SK_RST_PINS[] = {PIN_SK1_RST, PIN_SK2_RST, PIN_SK3_RST};
+static const int SK_BL_PINS[]  = {PIN_SK1_BL, PIN_SK2_BL, PIN_SK3_BL};
+static const int SK_KEY_PINS[] = {PIN_SK1_KEY, PIN_SK2_KEY, PIN_SK3_KEY};
 
 #endif // PINS_H

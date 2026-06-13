@@ -32,6 +32,15 @@ bool bleHidSendAction(const KeyAction& action) {
                           action.label, action.modifiers, action.keycode);
             return true;
 
+        case ActionType::DOUBLE_TAP:
+            // 连按两次同一键, 间隔 50ms
+            s_keyboard.tap(action.keycode, 0);
+            delay(50);
+            s_keyboard.tap(action.keycode, 0);
+            Serial.printf("[BLE] DoubleTap sent: %s (key=0x%02X)\n",
+                          action.label, action.keycode);
+            return true;
+
         case ActionType::MEDIA:
             s_keyboard.tap(action.mediaCode);
             Serial.printf("[BLE] Media sent: %s (0x%04X)\n",
@@ -44,4 +53,10 @@ bool bleHidSendAction(const KeyAction& action) {
             // 这些类型不发送按键, 由上层处理
             return false;
     }
+}
+
+bool bleHidSendKey(uint8_t keycode) {
+    if (!s_keyboard.isConnected()) return false;
+    s_keyboard.tap(keycode, 0);
+    return true;
 }

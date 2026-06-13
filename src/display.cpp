@@ -48,7 +48,7 @@ uint8_t displayBegin() {
             PIN_SPI_CLK,       // sck (共享)
             PIN_SPI_MOSI,      // mosi (共享)
             GFX_NOT_DEFINED,   // miso (不用)
-            FSPI,              // ESP32-C6 使用 FSPI
+            FSPI,              // ESP32-S3 uses FSPI
             true               // is_shared_interface: 多设备共享总线
         );
 
