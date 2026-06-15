@@ -1,167 +1,329 @@
 /**
- * Kiro Keyboard - USB HID with Voice Input Toggle + Animated Expressions
+ * Kiro Keyboard - 5-screen agentic coding controller
  *
- * Key1: Toggle between mic (double-tap Control) and check (Enter+ESC)
- * Round LCD: 3 animated expressions cycling every 10 seconds
+ * Logical keys:
+ *   key_left   -> ESC / stop dictation / exit edit / interrupt
+ *   key_middle -> start dictation / send input
+ *   key_right  -> switch agent / backspace in voice modes
  */
 
 #include <Arduino.h>
-#include <USB.h>
-#include <USBHIDKeyboard.h>
-#include <Arduino_GFX_Library.h>
 #include "kiro_expressions.h"
+#include "agent_registry.h"
+#include "display_hardware.h"
+#include "hid_actions.h"
+#include "ui_render.h"
 
-// USB HID Keyboard
-USBHIDKeyboard Keyboard;
+static constexpr uint16_t DEBOUNCE_MS = 35;
+static constexpr uint16_t LONG_PRESS_MS = 700;
+static constexpr uint16_t BACKSPACE_REPEAT_MS = 120;
+static constexpr uint16_t FRAME_INTERVAL_MS = 1000 / EXPR_FPS;
+static constexpr uint16_t DICTATION_COMMIT_DELAY_MS = 160;
 
-// Round LCD (J5) - GC9D01 160x160
-#define RLCD_MOSI  12
-#define RLCD_CLK   11
-#define RLCD_CS    16
-#define RLCD_DC    6
-#define RLCD_RST   40
-#define RLCD_BL    47
+struct ButtonState {
+  bool lastRaw = HIGH;
+  bool stable = HIGH;
+  unsigned long lastChangeMs = 0;
+  unsigned long pressedMs = 0;
+  unsigned long lastRepeatMs = 0;
+  bool repeatFired = false;
+};
 
-// ScreenKey 1 (J1)
-#define SK1_MOSI   9
-#define SK1_CLK    10
-#define SK1_CS     13
-#define SK1_DC     18
-#define SK1_RST    4
-#define SK1_BL     42
-#define SK1_KEY    1
+static ButtonState buttons[LOGICAL_KEY_COUNT];
+static AgentSlot agentSlots[AGENT_COUNT];
 
-Arduino_ESP32SPI busB(RLCD_DC, RLCD_CS, RLCD_CLK, RLCD_MOSI, -1);
-Arduino_GC9D01  roundLcd(&busB, RLCD_RST, 0, false);
-
-Arduino_ESP32SPI busA(SK1_DC, SK1_CS, SK1_CLK, SK1_MOSI, -1);
-Arduino_ST7735   sk1(&busA, SK1_RST, 0, true, 128, 128, 2, 3, 0, 0);
-
-// Expression animation state
-static uint8_t currentExpr = 0;        // 0=idle, 1=wait, 2=work
+static uint8_t selectedAgent = 0;
+static bool voiceRecording = false;
+static bool voiceEditing = false;
+static uint8_t currentExpr = 0;
 static uint8_t currentFrame = 0;
 static unsigned long lastFrameMs = 0;
-static unsigned long exprStartMs = 0;
-#define EXPR_SWITCH_MS 10000            // 10 seconds per expression
-#define FRAME_INTERVAL_MS (1000 / EXPR_FPS)  // 250ms per frame at 4fps
 
-// Offset to center 120x120 in 160x160
-#define EXPR_X_OFFSET ((160 - EXPR_FRAME_W) / 2)
-#define EXPR_Y_OFFSET ((160 - EXPR_FRAME_H) / 2)
+static void refreshUi();
+static AgentState agentStateAt(uint8_t agentIndex);
 
-// Key1 state
-static bool micMode = true;
-static bool lastBtn = HIGH;
-static unsigned long lastDebounce = 0;
+static void drawKey(LogicalKey key) {
+  Arduino_GFX* g = selectLogicalScreen(key);
+  AgentState state = agentStateAt(selectedAgent);
+  const bool voiceActive = voiceRecording || voiceEditing;
 
-void drawMic() {
-  sk1.fillScreen(0x0000);
-  uint16_t col = 0x07FF;
-  sk1.fillRoundRect(48, 25, 32, 45, 16, col);
-  sk1.fillRect(58, 70, 12, 15, col);
-  sk1.drawRoundRect(38, 50, 52, 40, 20, col);
-  sk1.fillRect(50, 85, 28, 4, col);
-  sk1.setTextColor(0xFFFF);
-  sk1.setTextSize(1);
-  sk1.setCursor(48, 100);
-  sk1.print("Voice");
-}
-
-void drawCheck() {
-  sk1.fillScreen(0x0000);
-  uint16_t col = 0x07E0;
-  for (int i = 0; i < 4; i++) {
-    sk1.drawLine(30, 60+i, 55, 85+i, col);
-    sk1.drawLine(55, 85+i, 98, 35+i, col);
+  if (key == KEY_LEFT_LOGICAL) {
+    if (voiceRecording) {
+      drawEscIcon(g, "STOP");
+    } else if (voiceEditing) {
+      drawEscIcon(g, "EXIT");
+    } else if (state == AGENT_RUNNING) {
+      drawEscIcon(g, "STOP");
+    } else if (state == AGENT_ERROR) {
+      drawEscIcon(g, "RESET");
+    } else {
+      drawEscIcon(g, "CANCEL");
+    }
+  } else if (key == KEY_MIDDLE_LOGICAL) {
+    if (voiceActive) {
+      drawCheckIcon(g);
+    } else {
+      drawMicIcon(g);
+    }
+  } else {
+    if (voiceRecording || voiceEditing) {
+      drawBackspaceIcon(g);
+    } else {
+      char label[12];
+      snprintf(label, sizeof(label), "NEXT %s", agentDisplayName(agentSlots, (selectedAgent + 1) % AGENT_COUNT));
+      drawSwitchAgentIcon(g, label);
+    }
   }
-  sk1.setTextColor(0xFFFF);
-  sk1.setTextSize(1);
-  sk1.setCursor(48, 100);
-  sk1.print("Send");
+  deselectScreenKeys();
 }
 
-void drawExprFrame() {
-  const uint16_t* frame = kiro_expressions[currentExpr][currentFrame];
-  roundLcd.draw16bitRGBBitmap(EXPR_X_OFFSET, EXPR_Y_OFFSET, frame, EXPR_FRAME_W, EXPR_FRAME_H);
+static void drawAllKeys() {
+  drawKey(KEY_LEFT_LOGICAL);
+  drawKey(KEY_MIDDLE_LOGICAL);
+  drawKey(KEY_RIGHT_LOGICAL);
+}
+
+static AgentState agentStateAt(uint8_t agentIndex) {
+  return ::agentStateAt(agentSlots, agentIndex);
+}
+
+static void refreshUi() {
+  drawAllKeys();
+  drawRectMetadata(rectDisplay(), agentSlots, selectedAgent, voiceRecording, voiceEditing);
+  drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, true);
+}
+
+static void switchAgent() {
+  if (voiceRecording) {
+    hidTap(KEY_ESC);
+    delay(DICTATION_COMMIT_DELAY_MS);
+    Serial.printf("[VOICE] Agent %d stopped recording before switch\n", selectedAgent + 1);
+  }
+  selectedAgent = (selectedAgent + 1) % AGENT_COUNT;
+  voiceRecording = false;
+  voiceEditing = false;
+  sendCommandRightBracket();
+  Serial.printf("[AGENT] selected Agent %d\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void startVoiceInput() {
+  voiceRecording = true;
+  voiceEditing = false;
+  sendDoubleControl();
+  Serial.printf("[VOICE] Agent %d recording\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void sendVoiceInput() {
+  hidTap(KEY_RETURN);
+  voiceRecording = false;
+  voiceEditing = false;
+  if (agentSlots[selectedAgent].occupied) {
+    agentSlots[selectedAgent].state = AGENT_RUNNING;
+    agentSlots[selectedAgent].lastUpdateMs = millis();
+  }
+  Serial.printf("[VOICE] Agent %d sent input\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void stopDictationForEditing() {
+  hidTap(KEY_ESC);
+  voiceRecording = false;
+  voiceEditing = true;
+  Serial.printf("[VOICE] Agent %d stopped dictation, editing input\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void clearVoiceInput() {
+  if (voiceRecording) {
+    hidTap(KEY_ESC);
+    delay(DICTATION_COMMIT_DELAY_MS);
+  }
+  voiceRecording = false;
+  voiceEditing = false;
+  sendClearInput();
+  Serial.printf("[VOICE] Agent %d cleared input\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void handleMiddleShort() {
+  if (voiceRecording || voiceEditing) {
+    sendVoiceInput();
+  } else {
+    startVoiceInput();
+  }
+}
+
+static void handleLeftShort() {
+  AgentState state = agentStateAt(selectedAgent);
+  if (voiceRecording) {
+    stopDictationForEditing();
+    return;
+  }
+
+  if (voiceEditing) {
+    hidTap(KEY_ESC);
+    voiceEditing = false;
+    Serial.printf("[VOICE] Agent %d exited edit mode\n", selectedAgent + 1);
+    refreshUi();
+    return;
+  }
+
+  hidTap(KEY_ESC);
+  if (state == AGENT_RUNNING) {
+    agentSlots[selectedAgent].state = AGENT_IDLE;
+    agentSlots[selectedAgent].occupied = true;
+    agentSlots[selectedAgent].lastUpdateMs = millis();
+  }
+  Serial.printf("[KEY] ESC for Agent %d\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void backspaceFromRecording() {
+  hidTap(KEY_ESC);
+  delay(DICTATION_COMMIT_DELAY_MS);
+  voiceRecording = false;
+  voiceEditing = true;
+  hidTap(KEY_BACKSPACE);
+  Serial.printf("[VOICE] Agent %d stopped dictation and backspaced\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void handleRightShort() {
+  if (voiceRecording) {
+    backspaceFromRecording();
+    return;
+  }
+
+  if (voiceEditing) {
+    hidTap(KEY_BACKSPACE);
+    Serial.println("[VOICE] Backspace");
+    return;
+  }
+
+  switchAgent();
+}
+
+static void handleRightLong() {
+  if (voiceRecording) {
+    backspaceFromRecording();
+    return;
+  }
+
+  if (voiceEditing) {
+    hidTap(KEY_BACKSPACE);
+    Serial.println("[VOICE] Backspace");
+    return;
+  }
+
+  handleRightShort();
+}
+
+static constexpr uint16_t AGENT_REMOVE_HOLD_MS = 5000;
+
+static void removeCurrentAgentSlot() {
+  AgentSlot& agent = agentSlots[selectedAgent];
+  clearAgentSlot(agent);
+  Serial.printf("[AGENT] Removed slot %d\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
+  const bool longPress = heldMs >= LONG_PRESS_MS;
+  if (key == KEY_LEFT_LOGICAL) {
+    handleLeftShort();
+  } else if (key == KEY_MIDDLE_LOGICAL) {
+    handleMiddleShort();
+  } else if (longPress) {
+    if (buttons[KEY_RIGHT_LOGICAL].repeatFired) {
+      return;
+    }
+    if (!voiceRecording && !voiceEditing && heldMs >= AGENT_REMOVE_HOLD_MS) {
+      removeCurrentAgentSlot();
+      return;
+    }
+    handleRightLong();
+  } else {
+    handleRightShort();
+  }
+}
+
+static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now) {
+  if (key != KEY_RIGHT_LOGICAL || !voiceEditing || btn.stable != LOW) {
+    return;
+  }
+
+  if (now - btn.pressedMs < LONG_PRESS_MS) {
+    return;
+  }
+
+  if (btn.lastRepeatMs != 0 && now - btn.lastRepeatMs < BACKSPACE_REPEAT_MS) {
+    return;
+  }
+
+  hidTap(KEY_BACKSPACE);
+  btn.repeatFired = true;
+  btn.lastRepeatMs = millis();
+  Serial.println("[VOICE] Backspace repeat");
+}
+
+static void pollButtons() {
+  unsigned long now = millis();
+  for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
+    LogicalKey key = static_cast<LogicalKey>(i);
+    bool raw = digitalRead(pinForLogical(key));
+    ButtonState& btn = buttons[i];
+
+    if (raw != btn.lastRaw) {
+      btn.lastChangeMs = now;
+      btn.lastRaw = raw;
+    }
+
+    if ((now - btn.lastChangeMs) > DEBOUNCE_MS && raw != btn.stable) {
+      btn.stable = raw;
+      if (btn.stable == LOW) {
+        btn.pressedMs = now;
+        btn.lastRepeatMs = 0;
+        btn.repeatFired = false;
+      } else {
+        handleButtonRelease(key, now - btn.pressedMs);
+      }
+    }
+
+    handleHeldButton(key, btn, millis());
+  }
 }
 
 void setup() {
   Serial.begin(115200);
 
-  // USB HID
-  Keyboard.begin();
-  USB.begin();
+  hidBegin();
+  beginDisplayHardware();
 
-  // Round LCD
-  pinMode(RLCD_BL, OUTPUT);
-  digitalWrite(RLCD_BL, HIGH);
-  roundLcd.begin();
-  roundLcd.fillScreen(0x0000);
+  for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
+    buttons[i].lastRaw = digitalRead(pinForLogical(static_cast<LogicalKey>(i)));
+    buttons[i].stable = buttons[i].lastRaw;
+  }
 
-  // ScreenKey 1
-  pinMode(SK1_BL, OUTPUT);
-  digitalWrite(SK1_BL, HIGH);
-  pinMode(SK1_KEY, INPUT_PULLUP);
-  sk1.begin();
-  drawMic();
-
-  // Draw first frame
-  drawExprFrame();
   lastFrameMs = millis();
-  exprStartMs = millis();
+  refreshUi();
 
-  Serial.println("Kiro KB ready (USB HID + expressions)");
+  Serial.println("Kiro KB ready (5-screen agent controller)");
+  printKeyWiring();
 }
 
 void loop() {
   unsigned long now = millis();
 
-  // --- Expression animation: advance frame ---
   if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
     currentFrame = (currentFrame + 1) % EXPR_FRAME_COUNT;
-    drawExprFrame();
+    drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, false);
   }
 
-  // --- Switch expression every 10 seconds ---
-  if (now - exprStartMs >= EXPR_SWITCH_MS) {
-    exprStartMs = now;
-    currentExpr = (currentExpr + 1) % EXPR_COUNT;
-    currentFrame = 0;
-    roundLcd.fillScreen(0x0000);  // clear before new expression
-    drawExprFrame();
+  if (pollAgentRegistrySerial(Serial, agentSlots, selectedAgent)) {
+    refreshUi();
   }
-
-  // --- Key1 toggle: mic <-> check ---
-  bool btn = digitalRead(SK1_KEY);
-  if (btn == LOW && lastBtn == HIGH && (now - lastDebounce > 200)) {
-    lastDebounce = now;
-
-    if (micMode) {
-      // Double-tap Control to invoke voice input
-      Keyboard.press(KEY_LEFT_CTRL);
-      delay(80);
-      Keyboard.releaseAll();
-      delay(80);
-      Keyboard.press(KEY_LEFT_CTRL);
-      delay(80);
-      Keyboard.releaseAll();
-      Serial.println("Sent: Double Control");
-      micMode = false;
-      drawCheck();
-    } else {
-      // Enter to confirm, then ESC to exit dictation
-      Keyboard.press(KEY_RETURN);
-      delay(80);
-      Keyboard.releaseAll();
-      delay(200);
-      Keyboard.press(KEY_ESC);
-      delay(80);
-      Keyboard.releaseAll();
-      Serial.println("Sent: Enter + ESC");
-      micMode = true;
-      drawMic();
-    }
-  }
-  lastBtn = btn;
+  pollButtons();
 }

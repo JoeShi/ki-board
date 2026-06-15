@@ -1,0 +1,29 @@
+{
+  "name": "coder",
+  "description": "Implements the requested change with minimal scope and verifies the result.",
+  "prompt": "file://./prompts/coder.md",
+  "keyboardShortcut": "ctrl+2",
+  "welcomeMessage": "Coder online",
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+      }
+    ]
+  }
+}

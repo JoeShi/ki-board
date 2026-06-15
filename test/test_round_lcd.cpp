@@ -26,8 +26,8 @@ void setup() {
   digitalWrite(RLCD_BL, HIGH);
 
   gfx.begin();
-  gfx.fillScreen(BLACK);
-  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_logo_open, LOGO_WIDTH, LOGO_HEIGHT);
+  gfx.fillScreen(0x0000);
+  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_idle_normal, LOGO_WIDTH, LOGO_HEIGHT);
   Serial.println("Kiro logo ready - blinking");
 }
 
@@ -36,9 +36,9 @@ void loop() {
   delay(3000);
 
   // Blink: show closed eyes
-  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_logo_blink, LOGO_WIDTH, LOGO_HEIGHT);
+  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_idle_blink, LOGO_WIDTH, LOGO_HEIGHT);
   delay(150);
 
   // Open eyes again
-  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_logo_open, LOGO_WIDTH, LOGO_HEIGHT);
+  gfx.draw16bitRGBBitmap(logoX, logoY, kiro_idle_normal, LOGO_WIDTH, LOGO_HEIGHT);
 }
