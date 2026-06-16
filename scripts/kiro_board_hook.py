@@ -5,15 +5,60 @@ Translate Kiro CLI hook events into board agent-state JSONL.
 Usage:
   python3 scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471
 
-When --serial-port is omitted, the script prints the JSONL payload to stdout.
+Serial port resolution priority:
+  1. --serial-port CLI argument (explicit override)
+  2. KIRO_BOARD_PORT environment variable
+  3. Auto-discovery via USB VID/PID (0x303A/0x1001) + product string "ki-board"
+  4. Fallback to stdout (prints JSONL payload to stdout)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from typing import Optional
+
+
+def discover_serial_port() -> Optional[str]:
+    """Auto-discover ki-board by USB VID/PID and product string.
+
+    Searches for a connected device matching:
+      - VID: 0x303A (Espressif)
+      - PID: 0x1001 (ESP32-S3 USB CDC)
+      - Product string containing "ki-board" (case-insensitive)
+
+    Returns the device path (e.g. /dev/cu.usbmodemXXX) or None.
+    """
+    try:
+        from serial.tools.list_ports import comports
+    except ImportError:
+        print(
+            "pyserial not installed, auto-discovery unavailable",
+            file=sys.stderr,
+        )
+        return None
+
+    matches = [
+        port.device
+        for port in comports()
+        if port.vid == 0x303A
+        and port.pid == 0x1001
+        and port.product
+        and "ki-board" in port.product.lower()
+    ]
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        print(
+            f"Warning: {len(matches)} ki-board devices found, using {matches[0]}",
+            file=sys.stderr,
+        )
+
+    return matches[0]
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,7 +182,19 @@ def main() -> int:
     if payload is None:
         return 0
 
-    emit_line(json.dumps(payload, separators=(",", ":")), args.serial_port)
+    # Port resolution priority: CLI arg > env var > auto-discovery > stdout
+    serial_port = args.serial_port
+    if not serial_port:
+        serial_port = os.environ.get("KIRO_BOARD_PORT") or None
+    if not serial_port:
+        serial_port = discover_serial_port()
+        if serial_port:
+            print(
+                f"Auto-discovered ki-board at {serial_port}",
+                file=sys.stderr,
+            )
+
+    emit_line(json.dumps(payload, separators=(",", ":")), serial_port)
     return 0
 
 

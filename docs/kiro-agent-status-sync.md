@@ -110,15 +110,21 @@ Hook script 向板子发送 JSON Lines，每行一个事件。
 
 1. 从 STDIN 读取 Kiro hook JSON。
 2. 从命令行参数读取 `--agent-name`。
-3. 把状态事件写成 JSONL，必要时直接发到板子的 USB Serial。
+3. 把状态事件写成 JSONL，自动发现并写入板子的 USB Serial。
 
-命令示例：
+命令示例（零配置，自动发现串口）：
 
 ```bash
-python3 scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471
+python3 scripts/kiro_board_hook.py --agent-name planner
 ```
 
-如果不带 `--serial-port`，脚本会把 JSONL 打印到 stdout，便于先在终端调试 hook 输入。
+脚本会通过 USB 自动发现机制找到 ki-board 设备并写入。如果没有找到板子，则回退到 stdout 模式，便于在终端调试 hook 输入。
+
+如需手动指定串口（优先级高于自动发现）：
+
+```bash
+python3 scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082
+```
 
 ## 7. Agent 配置示例
 
@@ -129,29 +135,29 @@ Kiro custom agent configuration 中 hooks 需要调用同一个 script，并把 
   "hooks": {
     "agentSpawn": [
       {
-        "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471"
+        "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner"
       }
     ],
     "userPromptSubmit": [
       {
-        "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471"
+        "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner"
       }
     ],
     "stop": [
       {
-        "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471"
+        "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner"
       }
     ],
     "postToolUse": [
       {
-        "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471"
+        "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner"
       }
     ]
   }
 }
 ```
 
-如果你想把启动和 hook 调用拆开，推荐先用脚本启动每个 split，再复用同一个 hook script。
+无需手动指定 `--serial-port`，脚本会自动发现 ki-board 设备。如果你想把启动和 hook 调用拆开，推荐先用脚本启动每个 split，再复用同一个 hook script。
 
 启动脚本见 [scripts/kiro_agent_start.sh](/Users/qiaoshi/Developer/vibe-coding-keyboard/scripts/kiro_agent_start.sh)。
 
@@ -183,16 +189,18 @@ kiro-cli --agent runner chat --trust-all-tools
 
 ### 7.2 Hook 到板子的连接方式
 
-第一版推荐 hook 直接把 JSONL 写到板子的串口：
+第一版推荐零配置用法，脚本会自动发现 ki-board 设备：
 
 ```bash
-python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471
+python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner
 ```
 
-如果你先想看 hook 事件内容，不连板子也可以只打印：
+如果你先想看 hook 事件内容，不连板子也可以设置环境变量 `KIRO_BOARD_PORT=stdout` 或拔掉板子让自动发现失败，脚本将回退到 stdout 打印。
+
+如需手动指定串口（例如有多块板子时）：
 
 ```bash
-python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner
+python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082
 ```
 
 ## 8. 串口连接策略
@@ -220,6 +228,45 @@ serial bridge -> 持续打开串口 -> 转发 JSONL 到板子
 ```
 
 bridge 只负责传输，不负责推断状态。
+
+### 8.3 自动发现串口
+
+从 v2 开始，hook 脚本支持 USB 自动发现，无需手动指定 `--serial-port`。
+
+#### 工作原理
+
+脚本使用 `serial.tools.list_ports` 枚举系统上的 USB 串口设备，通过以下条件匹配 ki-board：
+
+| 匹配条件 | 值 | 说明 |
+|----------|------|------|
+| USB VID | `0x303A` | Espressif 官方 Vendor ID |
+| USB PID | `0x1001` | ESP32-S3 原生 USB CDC 默认 Product ID |
+| Product 字符串 | `ki-board` | 固件通过 `USB_PRODUCT` 编译标志设置 |
+
+固件端在 `platformio.ini` 中配置了 `-DUSB_PRODUCT="\"ki-board\""` 和 `-DUSB_MANUFACTURER="\"Kiro\"`，使得板子在 USB 枚举时广播可识别的产品名称。
+
+#### 优先级链
+
+端口解析遵循以下优先级（从高到低）：
+
+1. `--serial-port` 命令行参数 - 明确指定，最高优先
+2. `KIRO_BOARD_PORT` 环境变量 - 适合固定开发环境
+3. USB 自动发现 - 零配置，适合大多数场景
+4. stdout 回退 - 没有找到板子时打印到终端，便于调试
+
+#### 验证板子是否可被发现
+
+连接板子后，运行以下命令查看 USB 串口设备列表：
+
+```bash
+python3 -m serial.tools.list_ports -v
+```
+
+输出中应该能看到包含 `VID:PID=303A:1001` 和 `ki-board` 的设备条目。如果看到该条目，说明自动发现可以正常工作。
+
+#### 换电脑 / 换 USB 口的场景
+
+自动发现的核心优势是不依赖固定的设备路径。无论 `/dev/cu.usbmodemXXX` 的编号如何变化，只要板子通过 USB 连接且固件正确烧录，脚本都能通过 VID/PID + product 字符串匹配到正确的 CDC 串口。
 
 ## 9. 板子端处理
 

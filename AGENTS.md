@@ -82,18 +82,24 @@ ESP32-S3 开发板同时暴露两个 USB 串口，**用途完全不同**：
 | 端口 | 用途 | 识别方式 |
 |------|------|---------|
 | `/dev/cu.usbmodem5B901608471` | **CH340 烧录口** (仅用于 esptool 烧录) | VID `1A86:55D3`, ioreg 显示 "USB Single Serial" |
-| `/dev/cu.usbmodem14C19F35A9082` | **ESP32-S3 原生 USB CDC** (Serial 读写) | VID `303A:1001`, ioreg 显示 "Espressif ESP32..." |
+| `/dev/cu.usbmodem14C19F35A9082` | **ESP32-S3 原生 USB CDC** (Serial 读写) | VID `303A:1001`, ioreg 显示 "ki-board" |
 
-- **hook 脚本 `--serial-port` 必须用 CDC 口** (`usbmodem14C19F35A9082`)，因为板子的 `Serial.read()` 只在这个口上工作。
+- **hook 脚本现在支持自动发现 CDC 口**：通过匹配 VID=0x303A、PID=0x1001 和 product 字符串 "ki-board"，脚本无需手动指定 `--serial-port` 即可找到正确端口。
 - **`pio run --target upload --upload-port` 用 CH340 口** (`usbmodem5B901608471`)。
-- 两个口的 usbmodem 号**拔插后可能变化**，通过 `ioreg -p IOUSB -l | grep -A5 Espressif` 或 VID 来确认。
+- 两个口的 usbmodem 号**拔插后可能变化**，自动发现机制消除了这个问题。
 - pyserial 打开 CDC 口时必须 `dsrdtr=False, rtscts=False` 并显式 `port.dtr=False`，否则可能触发板子复位。
 
 ## Hook 集成架构
 
 kiro-cli 的 hook (agentSpawn / userPromptSubmit / stop / postToolUse) 通过 `scripts/kiro_board_hook.py` 将事件转为 JSONL 写入 CDC 串口，板子 `pollRegistrySerial()` 在 loop 中解析并更新 agent tile 显示。
 
-hook 配置在 `.kiro/agents/<agent>.json` 的 `hooks` 字段中（非全局配置）。
+hook 脚本支持 USB 自动发现：通过 VID/PID + product 字符串 "ki-board" 匹配设备，无需在 hook 命令中硬编码串口路径。端口解析优先级为：`--serial-port` 参数 > `KIRO_BOARD_PORT` 环境变量 > 自动发现 > stdout 回退。
+
+hook 配置在 `.kiro/agents/<agent>.json` 的 `hooks` 字段中（非全局配置）。零配置用法示例：
+
+```bash
+python3 scripts/kiro_board_hook.py --agent-name planner
+```
 
 **注意事项：**
 - `agentSpawn` 仅在 agent **首次启动**时触发一次，切换回已运行的 agent 不会重新触发。因此板子重启后，需要对该 agent **发一次消息**（触发 `userPromptSubmit`）才能让 tile 显示出来。
