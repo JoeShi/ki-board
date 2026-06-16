@@ -34,13 +34,31 @@ def discover_serial_port() -> Optional[str]:
     try:
         from serial.tools.list_ports import comports
     except ImportError:
+        print(
+            "pyserial not installed, auto-discovery unavailable",
+            file=sys.stderr,
+        )
         return None
 
-    for port in comports():
-        if port.vid == 0x303A and port.pid == 0x1001:
-            if port.product and "ki-board" in port.product.lower():
-                return port.device
-    return None
+    matches = [
+        port.device
+        for port in comports()
+        if port.vid == 0x303A
+        and port.pid == 0x1001
+        and port.product
+        and "ki-board" in port.product.lower()
+    ]
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        print(
+            f"Warning: {len(matches)} ki-board devices found, using {matches[0]}",
+            file=sys.stderr,
+        )
+
+    return matches[0]
 
 
 def parse_args() -> argparse.Namespace:
