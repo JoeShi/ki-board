@@ -175,7 +175,7 @@ ls /dev/cu.usbmodem*
 
 ## 🔌 配置 Kiro CLI Hook（Agent 状态联动）
 
-键盘可以实时显示 Kiro CLI agent 的运行状态。需要配置 hook 将事件发送到板子的 USB CDC 串口。
+键盘可以实时显示 Kiro CLI agent 的运行状态。hook 脚本支持 USB 自动发现，无需手动指定串口路径。
 
 **1. 安装依赖：**
 
@@ -183,31 +183,43 @@ ls /dev/cu.usbmodem*
 pip install pyserial
 ```
 
-**2. 在 `.kiro/agents/<agent>.json` 中配置 hooks：**
+**2. 在 `.kiro/agents/<agent>.json` 中配置 hooks（零配置，自动发现串口）：**
 
 ```json
 {
   "name": "planner",
   "hooks": {
     "agentSpawn": [
-      { "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082" }
+      { "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner" }
     ],
     "userPromptSubmit": [
-      { "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082" }
+      { "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner" }
     ],
     "stop": [
-      { "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082" }
+      { "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner" }
     ],
     "postToolUse": [
-      { "command": "python3 /path/to/vibe-coding-keyboard/scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem14C19F35A9082" }
+      { "command": "python3 /path/to/ki-board/scripts/kiro_board_hook.py --agent-name planner" }
     ]
   }
 }
 ```
 
+脚本通过 USB VID/PID (0x303A:0x1001) 和 product 字符串 "ki-board" 自动发现板子的 CDC 串口，换电脑或换 USB 口后无需修改配置。
+
+端口解析优先级：`--serial-port` 参数 > `KIRO_BOARD_PORT` 环境变量 > 自动发现 > stdout 回退。
+
 每个 custom agent 复用同一段 hook 配置，只需要改 `name` 和 `--agent-name`。hook 配置样例见 [docs/kiro-cli-hooks.example.json](docs/kiro-cli-hooks.example.json)。
 
-**3. 启动示例：**
+**3. 验证板子是否可被自动发现：**
+
+```bash
+python3 -m serial.tools.list_ports -v
+```
+
+输出中应包含 `VID:PID=303A:1001` 和 `ki-board` 的设备条目。
+
+**4. 启动示例：**
 
 ```bash
 kiro-cli --agent planner chat --trust-all-tools
@@ -237,7 +249,7 @@ kiro-cli --agent runner chat --trust-all-tools
 ## ⚠️ 注意事项
 
 - **当前主固件不启动 Web 配置**：`webconfig.*`、`keymap.*`、`webpage.h` 是保留模块，不代表当前 `main.cpp` 的运行行为。
-- **Hook 串口必须用 CDC 口**：`scripts/kiro_board_hook.py --serial-port` 要指向 ESP32-S3 原生 USB CDC 口，不要指向 CH340 烧录口。
+- **Hook 串口自动发现**：`scripts/kiro_board_hook.py` 默认通过 USB VID/PID + product 字符串自动发现 CDC 串口，无需手动指定 `--serial-port`。如有多块板子可通过 `--serial-port` 或 `KIRO_BOARD_PORT` 环境变量指定。
 - **pyserial 打开 CDC 口时避免复位**：脚本已设置 `dsrdtr=False`、`rtscts=False`、`dtr=False`、`rts=False`。
 - **lib/ 目录随仓库提交**：HijelHID_BLEKeyboard 因 GitHub clone 易超时，已放入 `lib/` 直接提交。
 - **Kiro hook 能力有限**：当前不自动识别审批态，也不读取真实 context token 数；矩形屏 context 先显示占位信息。
