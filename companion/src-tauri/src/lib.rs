@@ -82,6 +82,7 @@ struct CompanionStatus {
     busy: bool,
     paired: bool,
     authenticated: bool,
+    pairing_code: String,
     last_transcript: String,
     last_partial: String,
     last_error: String,
@@ -132,6 +133,7 @@ struct AppStateInner {
     recording: Option<RecordingHandle>,
     busy: bool,
     authenticated: bool,
+    pairing_code: String,
     last_transcript: String,
     last_partial: String,
     last_error: String,
@@ -287,6 +289,10 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let board_id = value.get("board_id").and_then(|v| v.as_str()).unwrap_or("");
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("Kiro KB");
+            log(app, format!("pairing code {code} — compare with the board, then press the middle (●) key to confirm"));
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.pairing_code = code.to_string();
+            }
             let _ = app.emit(
                 "pair-event",
                 serde_json::json!({"event":"code","code":code,"board_id":board_id,"name":name}),
@@ -309,6 +315,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
                 if let Ok(mut inner) = state.inner.lock() {
                     inner.settings.paired_board_id = board_id.clone();
                     inner.authenticated = true;
+                    inner.pairing_code.clear();
                     Some(inner.settings.clone())
                 } else {
                     None
@@ -327,6 +334,9 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
         "pair_failed" => {
             let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("failed");
             log(app, format!("pairing failed: {reason}"));
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.pairing_code.clear();
+            }
             let _ = app.emit(
                 "pair-event",
                 serde_json::json!({"event":"failed","reason":reason}),
@@ -511,6 +521,7 @@ fn get_status(state: State<SharedState>) -> Result<CompanionStatus, String> {
         busy: inner.busy,
         paired: !inner.settings.paired_board_id.trim().is_empty(),
         authenticated: inner.authenticated,
+        pairing_code: inner.pairing_code.clone(),
         last_transcript: inner.last_transcript.clone(),
         last_partial: inner.last_partial.clone(),
         last_error: inner.last_error.clone(),
@@ -535,6 +546,17 @@ fn get_logs(state: State<SharedState>) -> Result<Vec<String>, String> {
         .map_err(|_| "state lock poisoned")?
         .logs
         .clone())
+}
+
+#[tauri::command]
+fn clear_logs(state: State<SharedState>) -> Result<(), String> {
+    state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .logs
+        .clear();
+    Ok(())
 }
 
 #[tauri::command]
@@ -670,6 +692,12 @@ fn forget_device(app: AppHandle, state: State<SharedState>) -> Result<(), String
     save_settings_to_disk(&app, &settings_snapshot)?;
     log(&app, "forgot paired device");
     Ok(())
+}
+
+#[tauri::command]
+fn set_hid_output(state: State<SharedState>, mode: String) -> Result<(), String> {
+    let hid_mode = if mode == "ble" { "ble" } else { "usb" };
+    write_board_json_from_arc(state.inner(), &protocol::set_hid_output_payload(hid_mode))
 }
 
 fn hostname_label() -> String {
@@ -1403,6 +1431,7 @@ pub fn run() {
                     recording: None,
                     busy: false,
                     authenticated: false,
+                    pairing_code: String::new(),
                     last_transcript: String::new(),
                     last_partial: String::new(),
                     last_error: String::new(),
@@ -1420,6 +1449,7 @@ pub fn run() {
             has_doubao_api_key,
             get_status,
             get_logs,
+            clear_logs,
             list_serial_ports,
             list_ble_devices,
             test_log_event,
@@ -1427,6 +1457,7 @@ pub fn run() {
             disconnect_device,
             start_pairing,
             forget_device,
+            set_hid_output,
             get_keymap,
             set_keymap,
             flash_firmware,
@@ -1457,6 +1488,7 @@ mod tests {
                     recording: Some(RecordingHandle { stop_tx, done_rx }),
                     busy: true,
                     authenticated: false,
+                    pairing_code: String::new(),
                     last_transcript: String::new(),
                     last_partial: String::new(),
                     last_error: String::new(),

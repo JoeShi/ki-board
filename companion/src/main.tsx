@@ -25,6 +25,7 @@ type Status = {
   busy: boolean;
   paired: boolean;
   authenticated: boolean;
+  pairing_code: string;
   last_transcript: string;
   last_partial: string;
   last_error: string;
@@ -74,6 +75,7 @@ const defaultStatus: Status = {
   busy: false,
   paired: false,
   authenticated: false,
+  pairing_code: "",
   last_transcript: "",
   last_partial: "",
   last_error: "",
@@ -132,6 +134,12 @@ function App() {
   async function scanBleDevices() {
     setUiError("");
     setBleDevices(await invoke<BleDeviceInfo[]>("list_ble_devices"));
+  }
+
+  async function clearLogs() {
+    setUiError("");
+    await invoke("clear_logs");
+    setEvents([]);
   }
 
   async function testLogEvent() {
@@ -224,10 +232,15 @@ function App() {
 
   // Persist the connection mode immediately so a later Refresh (which reloads
   // settings from disk) doesn't revert the chip selection.
+  // Also tells the board which HID output to use (USB or BLE).
   async function selectMode(mode: string) {
     const next = { ...settings, connection_mode: mode };
     setSettings(next);
     await invoke("save_settings", { settings: next });
+    // Best-effort: if already connected, sync the HID output to the board.
+    if (status.device_connected) {
+      await invoke("set_hid_output", { mode: mode === "ble" ? "ble" : "usb" }).catch(() => {});
+    }
   }
 
   async function startPairing() {
@@ -438,6 +451,12 @@ function App() {
                   <button onClick={() => runAction(pairFlow)}>Pair</button>
                   <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>Forget device</button>
                 </div>
+                {status.pairing_code && (
+                  <div style={{ marginTop: 12, padding: "12px 14px", background: "#10131a", border: "1px solid #07c2d6", borderRadius: 8 }}>
+                    <div style={{ color: "#aab", fontSize: 12 }}>Compare with the board, then press ● on the board:</div>
+                    <div style={{ fontFamily: "monospace", fontSize: 32, letterSpacing: 6, color: "#fff", marginTop: 4 }}>{status.pairing_code}</div>
+                  </div>
+                )}
                 {pairMessage && <p className="hint">{pairMessage}</p>}
               </>
             )}
@@ -562,6 +581,9 @@ function App() {
 
         {activeView === "logs" && (
           <Panel title="Event Log">
+            <div className="actions">
+              <button className="secondary" onClick={() => runAction(clearLogs)}>Clear</button>
+            </div>
             <div className="log">
               {events.map((event, index) => <div key={`${event}-${index}`}>{event}</div>)}
             </div>

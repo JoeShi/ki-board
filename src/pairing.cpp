@@ -1,5 +1,6 @@
 #include "pairing.h"
 #include "ble_gatt_comm.h"
+#include "ble_hid.h"
 #include "agent_registry.h"
 
 #include <ArduinoJson.h>
@@ -114,6 +115,7 @@ void pairingEnterMode() {
   genToken(s_pendingToken, sizeof(s_pendingToken));
   s_phase = PAIRING_PAIRING;
   s_windowDeadlineMs = millis() + PAIRING_WINDOW_MS;
+  bleHidSetDiscoverable(true);
   Serial.printf("[PAIR] pairing window open, code=%s\n", s_code);
 }
 
@@ -121,10 +123,13 @@ void pairingConfirm() {
   if (s_phase != PAIRING_PAIRING) {
     return;
   }
-  // Only finalize if a companion actually requested pairing (we have a channel
-  // to deliver the token on).
   if (s_pairOutput == nullptr) {
-    Serial.println("[PAIR] confirm ignored: no companion has requested pairing yet");
+    // No companion has requested pairing (e.g. user only paired via system
+    // Bluetooth). Still close the pairing window and restore normal state.
+    s_phase = (s_token[0] != '\0') ? PAIRING_PAIRED : PAIRING_UNPAIRED;
+    s_code[0] = '\0';
+    bleHidSetDiscoverable(false);
+    Serial.println("[PAIR] confirm: no companion request, closing window");
     return;
   }
   strncpy(s_token, s_pendingToken, sizeof(s_token) - 1);
@@ -133,6 +138,7 @@ void pairingConfirm() {
   s_phase = PAIRING_PAIRED;
   s_auth[s_pairTransport] = true;
   s_code[0] = '\0';
+  bleHidSetDiscoverable(false);
   Serial.println("[PAIR] confirmed, binding stored");
   sendPairOk(*s_pairOutput);
 }
@@ -143,6 +149,7 @@ void pairingCancel() {
   }
   s_phase = (s_token[0] != '\0') ? PAIRING_PAIRED : PAIRING_UNPAIRED;
   s_code[0] = '\0';
+  bleHidSetDiscoverable(false);
   Serial.println("[PAIR] pairing cancelled");
   if (s_pairOutput) {
     sendPairFailed(*s_pairOutput, "cancelled");
@@ -153,6 +160,7 @@ bool pairingPoll(unsigned long now) {
   if (s_phase == PAIRING_PAIRING && (long)(now - s_windowDeadlineMs) >= 0) {
     s_phase = (s_token[0] != '\0') ? PAIRING_PAIRED : PAIRING_UNPAIRED;
     s_code[0] = '\0';
+    bleHidSetDiscoverable(false);
     Serial.println("[PAIR] pairing window timed out");
     if (s_pairOutput) {
       sendPairFailed(*s_pairOutput, "timeout");
@@ -228,7 +236,8 @@ PairLineAction pairingHandleLine(const char* line, Print& out, PairTransport tra
 
   // Privileged commands: USB is trusted; BLE requires authentication.
   if (strcmp(type, "agent_state") == 0 || strcmp(type, "get_keymap") == 0 ||
-      strcmp(type, "set_keymap") == 0) {
+      strcmp(type, "set_keymap") == 0 || strcmp(type, "set_hid_output") == 0 ||
+      strcmp(type, "get_hid_output") == 0) {
     if (transport == PAIR_TRANSPORT_USB || s_auth[transport]) {
       return PAIR_LINE_FORWARD;
     }

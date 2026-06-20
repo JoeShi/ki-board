@@ -37,6 +37,10 @@ pub fn unpair_payload() -> Value {
     serde_json::json!({"type":"unpair"})
 }
 
+pub fn set_hid_output_payload(mode: &str) -> Value {
+    serde_json::json!({"type":"set_hid_output","mode": mode})
+}
+
 pub fn legacy_ping_payload() -> Value {
     serde_json::json!({"type":"companion_ping"})
 }

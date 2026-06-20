@@ -18,11 +18,14 @@ KeyAction  g_keyActions[NUM_KEYS];
 void keymapLoadDefaults() {
     // --- 3个按键 ---
     // Key1: 语音输入 (双击 Control 唤起)
-    g_keyActions[0] = ACTION_DOUBLE_TAP(KEY_LEFT_CTRL, "Voice");
+    KeyAction a0 = ACTION_DOUBLE_TAP(KEY_LCTRL, "Voice");
+    g_keyActions[0] = a0;
     // Key2: 接受AI建议 (Tab)
-    g_keyActions[1] = ACTION_HOTKEY(0, KEY_TAB, "Accept");
+    KeyAction a1 = ACTION_HOTKEY(0, KEY_TAB, "Accept");
+    g_keyActions[1] = a1;
     // Key3: 拒绝AI建议 (Escape)
-    g_keyActions[2] = ACTION_HOTKEY(0, KEY_ESCAPE, "Reject");
+    KeyAction a2 = ACTION_HOTKEY(0, KEY_ESCAPE, "Reject");
+    g_keyActions[2] = a2;
 }
 
 // === JSON 序列化辅助 ===

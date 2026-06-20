@@ -1,4 +1,5 @@
 #include "agent_registry.h"
+#include "hid_actions.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
 #include <cstring>
@@ -204,6 +205,33 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
       response["error"] = "NVS write failed";
     }
     response["keys"] = doc["keys"];
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "set_hid_output") == 0) {
+    const char* mode = doc["mode"] | "usb";
+    HidOutputMode m = (strcmp(mode, "ble") == 0) ? HID_OUTPUT_BLE : HID_OUTPUT_USB;
+    hidSetOutputMode(m);
+    JsonDocument response;
+    response["type"] = "hid_output_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    response["mode"] = (m == HID_OUTPUT_BLE) ? "ble" : "usb";
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "get_hid_output") == 0) {
+    JsonDocument response;
+    response["type"] = "hid_output_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    response["mode"] = (hidGetOutputMode() == HID_OUTPUT_BLE) ? "ble" : "usb";
     serializeJson(response, output);
     output.println();
     companionMarkSeen();

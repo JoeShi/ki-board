@@ -9,8 +9,11 @@
 
 #include "keymap.h"
 
-// 初始化 BLE HID, 开始广播
+// 初始化 BLE HID, 但不广播 HID (仅注册服务)
 void bleHidBegin();
+
+// 开始/停止 HID 广播可见性 (配对模式时开,结束时关)
+void bleHidSetDiscoverable(bool discoverable);
 
 // 是否已连接到主机
 bool bleHidConnected();

@@ -1,18 +1,17 @@
 #include "ble_gatt_comm.h"
 #include "config.h"
 #include "pairing.h"
-#include <BLE2902.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
+#include <NimBLEDevice.h>
 
-static BLEUUID SERVICE_UUID("6b69726f-6b62-0001-8000-00805f9b34fb");
-static BLEUUID RX_UUID("6b69726f-6b62-0002-8000-00805f9b34fb");
-static BLEUUID TX_UUID("6b69726f-6b62-0003-8000-00805f9b34fb");
+// Custom Kiro companion service, now on NimBLE (so BLE HID can later coexist on
+// the same host stack). Public API is unchanged.
 
-static BLEServer* s_server = nullptr;
-static BLECharacteristic* s_tx = nullptr;
-static bool s_connected = false;
+static const char* SERVICE_UUID = "6b69726f-6b62-0001-8000-00805f9b34fb";
+static const char* RX_UUID = "6b69726f-6b62-0002-8000-00805f9b34fb";
+static const char* TX_UUID = "6b69726f-6b62-0003-8000-00805f9b34fb";
+
+static NimBLEServer* s_server = nullptr;
+static NimBLECharacteristic* s_tx = nullptr;
 static String s_rxBuffer;
 static String s_boardId;
 static BleGattLineHandler s_handler = nullptr;
@@ -27,7 +26,7 @@ static void notifyBytes(const uint8_t* data, size_t size) {
   size_t offset = 0;
   while (offset < size) {
     size_t chunk = min<size_t>(180, size - offset);
-    s_tx->setValue(const_cast<uint8_t*>(data + offset), chunk);
+    s_tx->setValue(data + offset, chunk);
     s_tx->notify();
     delay(2);
     offset += chunk;
@@ -37,10 +36,9 @@ static void notifyBytes(const uint8_t* data, size_t size) {
 class BleNotifyPrint : public Print {
 public:
   // Buffer outgoing bytes and flush one whole line per notification. ArduinoJson
-  // serializes byte-by-byte through Print, and sending one BLE notification per
-  // byte floods the link (and the companion log) and lets concurrent senders
-  // interleave their bytes. Buffering until '\n' makes each JSON line a single
-  // notification, matching bleGattCommSendLine().
+  // serializes byte-by-byte through Print; one notification per byte floods the
+  // link and lets concurrent senders interleave. Buffering until '\n' makes each
+  // JSON line a single notification, matching bleGattCommSendLine().
   size_t write(uint8_t b) override {
     appendByte(b);
     return 1;
@@ -71,20 +69,6 @@ private:
 
 static BleNotifyPrint s_blePrint;
 
-class KiroServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer*) override {
-    s_connected = true;
-    Serial.println("[BLE-GATT] companion connected");
-  }
-
-  void onDisconnect(BLEServer* server) override {
-    s_connected = false;
-    Serial.println("[BLE-GATT] companion disconnected");
-    pairingOnDisconnect(PAIR_TRANSPORT_BLE);
-    server->startAdvertising();
-  }
-};
-
 static void handleRxByte(char ch) {
   if (ch == '\r') {
     return;
@@ -108,42 +92,61 @@ static void handleRxByte(char ch) {
   }
 }
 
-class KiroRxCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* characteristic) override {
-    String value = characteristic->getValue();
+class KiroServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer*, NimBLEConnInfo&) override {
+    Serial.println("[BLE-GATT] companion connected");
+  }
+
+  void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int) override {
+    Serial.println("[BLE-GATT] companion disconnected");
+    pairingOnDisconnect(PAIR_TRANSPORT_BLE);
+    // Keep the board discoverable for the next central (and, later, alongside a
+    // system HID connection).
+    NimBLEDevice::startAdvertising();
+  }
+};
+
+class KiroRxCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+    NimBLEAttValue value = characteristic->getValue();
     for (size_t i = 0; i < value.length(); i++) {
-      handleRxByte(value[i]);
+      handleRxByte(static_cast<char>(value[i]));
     }
   }
 };
 
 void bleGattCommBegin(BleGattLineHandler handler) {
   s_handler = handler;
-  BLEDevice::init(BLE_DEVICE_NAME);
-  s_boardId = BLEDevice::getAddress().toString().c_str();
-  BLEServer* server = BLEDevice::createServer();
-  s_server = server;
-  server->setCallbacks(new KiroServerCallbacks());
 
-  BLEService* service = server->createService(SERVICE_UUID);
-  s_tx = service->createCharacteristic(
-    TX_UUID,
-    BLECharacteristic::PROPERTY_NOTIFY
-  );
-  s_tx->addDescriptor(new BLE2902());
+  // NimBLEDevice::init() is idempotent and createServer() is a singleton, so
+  // it is safe to call these even if the HID library already initialised them.
+  // This lets us add the Kiro companion service alongside the HID service on
+  // the same server.
+  if (!NimBLEDevice::isInitialized()) {
+    NimBLEDevice::init(BLE_DEVICE_NAME);
+  }
+  NimBLEDevice::setMTU(185);
+  s_boardId = NimBLEDevice::getAddress().toString().c_str();
 
-  BLECharacteristic* rx = service->createCharacteristic(
+  s_server = NimBLEDevice::createServer();
+  s_server->setCallbacks(new KiroServerCallbacks(), true); // true = append, don't replace
+
+  NimBLEService* service = s_server->createService(SERVICE_UUID);
+  s_tx = service->createCharacteristic(TX_UUID, NIMBLE_PROPERTY::NOTIFY);
+  NimBLECharacteristic* rx = service->createCharacteristic(
     RX_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+    NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR
   );
   rx->setCallbacks(new KiroRxCallbacks());
-
   service->start();
-  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+
+  // Advertising is managed by bleHidSetDiscoverable() which always includes our
+  // custom service UUID. Start initial advertising here (companion-only, no HID).
+  NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
   advertising->addServiceUUID(SERVICE_UUID);
-  advertising->setScanResponse(true);
-  advertising->start();
-  Serial.println("[BLE-GATT] advertising companion service");
+  advertising->enableScanResponse(true);
+  NimBLEDevice::startAdvertising();
+  Serial.println("[BLE-GATT] companion service registered (NimBLE)");
 }
 
 void bleGattCommSetRegistry(AgentSlot* slots, uint8_t* selectedAgent) {
@@ -162,7 +165,7 @@ void bleGattCommSendLine(const char* line) {
 }
 
 bool bleGattCommConnected() {
-  return s_tx != nullptr;
+  return s_server && s_server->getConnectedCount() > 0;
 }
 
 const char* bleGattCommBoardId() {

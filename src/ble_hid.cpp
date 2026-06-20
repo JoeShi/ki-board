@@ -11,8 +11,29 @@
 static HijelHID_BLEKeyboard s_keyboard(BLE_DEVICE_NAME, "Kiro", 100);
 
 void bleHidBegin() {
+    s_keyboard.setSecurityMode(BLEKeyboardSecurity::JustWorks);
+    s_keyboard.setLogLevel(HIDLogLevel::Normal);
     s_keyboard.begin();
-    Serial.println("[BLE] HID keyboard advertising as: " BLE_DEVICE_NAME);
+    // Stop the library's own advertising — we manage advertising centrally in
+    // ble_gatt_comm so we can control when HID is discoverable (only in pairing
+    // mode) vs when only the companion service is advertised.
+    NimBLEDevice::stopAdvertising();
+    Serial.println("[BLE-HID] service registered (not yet discoverable)");
+}
+
+void bleHidSetDiscoverable(bool discoverable) {
+    // Rebuild advertising data: always include our custom Kiro service UUID;
+    // add the HID service UUID only when in pairing/discoverable mode.
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    adv->reset();
+    adv->addServiceUUID("6b69726f-6b62-0001-8000-00805f9b34fb");
+    if (discoverable) {
+        adv->addServiceUUID(NimBLEUUID(static_cast<uint16_t>(0x1812))); // HID
+    }
+    adv->enableScanResponse(true);
+    adv->setAppearance(0x03C1); // Keyboard
+    NimBLEDevice::startAdvertising();
+    Serial.printf("[BLE-HID] discoverable=%s\n", discoverable ? "true" : "false");
 }
 
 bool bleHidConnected() {
@@ -47,7 +68,6 @@ bool bleHidSendAction(const KeyAction& action) {
                           action.label, action.mediaCode);
             return true;
 
-        case ActionType::MODE_SWITCH:
         case ActionType::NONE:
         default:
             // 这些类型不发送按键, 由上层处理

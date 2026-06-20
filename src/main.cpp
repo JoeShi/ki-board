@@ -11,6 +11,7 @@
 #include "kiro_expressions.h"
 #include "agent_registry.h"
 #include "ble_gatt_comm.h"
+#include "ble_hid.h"
 #include "display_hardware.h"
 #include "hid_actions.h"
 #include "pairing.h"
@@ -456,6 +457,7 @@ void setup() {
   hidBegin();
   beginDisplayHardware();
   wifiConfigBegin();
+  bleHidBegin();
   bleGattCommSetRegistry(agentSlots, &selectedAgent);
   bleGattCommBegin(handleAgentRegistryLine);
   pairingBegin();
