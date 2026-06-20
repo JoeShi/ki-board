@@ -1,6 +1,22 @@
 #include "agent_registry.h"
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <cstring>
+
+#include "pairing.h"
+
+// Must exceed the companion heartbeat interval (5s) with margin so the board
+// does not flap the companion between online/offline between heartbeats.
+static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
+static unsigned long s_companionLastSeenMs = 0;
+static constexpr const char* KEYMAP_NAMESPACE = "kirokb";
+static constexpr const char* KEYMAP_KEY = "companion_keymap";
+static constexpr const char* DEFAULT_KEYMAP_JSON =
+  "{\"keys\":["
+  "{\"label\":\"ESC\",\"action_type\":\"hotkey\",\"key\":\"Escape\",\"modifiers\":[]},"
+  "{\"label\":\"Voice\",\"action_type\":\"voice\",\"key\":\"Voice\",\"modifiers\":[]},"
+  "{\"label\":\"Next\",\"action_type\":\"agent_next\",\"key\":\"RightBracket\",\"modifiers\":[\"gui\"]}"
+  "]}";
 
 const char* agentStateName(AgentState state) {
   switch (state) {
@@ -29,6 +45,15 @@ void clearAgentSlot(AgentSlot& agent) {
   agent.state = AGENT_IDLE;
   agent.occupied = false;
   agent.lastUpdateMs = 0;
+}
+
+void companionMarkSeen() {
+  s_companionLastSeenMs = millis();
+}
+
+bool companionIsOnline() {
+  return s_companionLastSeenMs != 0 &&
+         millis() - s_companionLastSeenMs < COMPANION_ONLINE_GRACE_MS;
 }
 
 static uint8_t findAgentSlotByName(const AgentSlot* slots, const char* name) {
@@ -101,7 +126,7 @@ static bool applyRegistryEvent(AgentSlot* slots, uint8_t& selectedAgent,
   return true;
 }
 
-static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const char* line) {
+bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, line);
   if (err) {
@@ -109,6 +134,82 @@ static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const c
   }
 
   const char* type = doc["type"] | "";
+  if (strcmp(type, "hello") == 0 || strcmp(type, "companion_hello") == 0) {
+    JsonDocument response;
+    response["type"] = "hello_ack";
+    response["protocol"] = 1;
+    response["fw"] = "0.2.0";
+    JsonArray capabilities = response["capabilities"].to<JsonArray>();
+    capabilities.add("usb_cdc");
+    capabilities.add("ble_gatt");
+    capabilities.add("keymap");
+    capabilities.add("voice_state");
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "ping") == 0) {
+    JsonDocument response;
+    response["type"] = "pong";
+    response["protocol"] = 1;
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "companion_ping") == 0) {
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "get_keymap") == 0) {
+    Preferences prefs;
+    String keymap = DEFAULT_KEYMAP_JSON;
+    if (prefs.begin(KEYMAP_NAMESPACE, true)) {
+      keymap = prefs.getString(KEYMAP_KEY, DEFAULT_KEYMAP_JSON);
+      prefs.end();
+    }
+    JsonDocument response;
+    deserializeJson(response, keymap);
+    response["type"] = "keymap_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "set_keymap") == 0) {
+    JsonDocument stored;
+    stored["keys"] = doc["keys"];
+    String raw;
+    serializeJson(stored, raw);
+
+    bool ok = false;
+    Preferences prefs;
+    if (prefs.begin(KEYMAP_NAMESPACE, false)) {
+      ok = prefs.putString(KEYMAP_KEY, raw) > 0;
+      prefs.end();
+    }
+
+    JsonDocument response;
+    response["type"] = "keymap_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = ok;
+    if (!ok) {
+      response["error"] = "NVS write failed";
+    }
+    response["keys"] = doc["keys"];
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
   if (strcmp(type, "agent_state") != 0) {
     return false;
   }
@@ -132,7 +233,7 @@ static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const c
 }
 
 bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selectedAgent) {
-  static char line[256];
+  static char line[1024];
   static size_t len = 0;
   bool changed = false;
 
@@ -147,7 +248,9 @@ bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selected
     if (ch == '\n') {
       line[len] = '\0';
       if (len > 0 && line[0] == '{') {
-        changed = handleRegistryLine(slots, selectedAgent, line) || changed;
+        if (pairingHandleLine(line, serial, PAIR_TRANSPORT_USB) == PAIR_LINE_FORWARD) {
+          changed = handleAgentRegistryLine(line, slots, selectedAgent, serial) || changed;
+        }
       }
       len = 0;
       continue;

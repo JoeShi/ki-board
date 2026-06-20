@@ -37,6 +37,9 @@ $RECYCLE.BIN/
 *.swp
 build_log.txt
 __pycache__/
+node_modules/
+target/
+companion/dist/
 
 # ===== 自动生成 (PlatformIO) =====
 compile_commands.json
@@ -63,3 +66,6 @@ assets/kiro_*.gif
 # docs/         文档
 # partitions/   分区表
 # platformio.ini 工程配置
+
+# ===== 视频渲染产物 (可由 remotion 重新生成) =====
+video/out/

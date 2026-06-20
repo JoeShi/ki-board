@@ -10,15 +10,22 @@
 #include <Arduino.h>
 #include "kiro_expressions.h"
 #include "agent_registry.h"
+#include "ble_gatt_comm.h"
 #include "display_hardware.h"
 #include "hid_actions.h"
+#include "pairing.h"
 #include "ui_render.h"
+#include "wifi_config.h"
 
 static constexpr uint16_t DEBOUNCE_MS = 35;
 static constexpr uint16_t LONG_PRESS_MS = 700;
 static constexpr uint16_t BACKSPACE_REPEAT_MS = 120;
 static constexpr uint16_t FRAME_INTERVAL_MS = 1000 / EXPR_FPS;
 static constexpr uint16_t DICTATION_COMMIT_DELAY_MS = 160;
+static constexpr uint16_t WIFI_STATUS_INTERVAL_MS = 1000;
+static constexpr uint16_t WIFI_RESET_HOLD_MS = 5000;
+static constexpr uint16_t BLE_STATUS_INTERVAL_MS = 2000;
+static constexpr uint16_t PAIRING_ENTER_HOLD_MS = 3000;
 
 struct ButtonState {
   bool lastRaw = HIGH;
@@ -38,9 +45,42 @@ static bool voiceEditing = false;
 static uint8_t currentExpr = 0;
 static uint8_t currentFrame = 0;
 static unsigned long lastFrameMs = 0;
+static unsigned long lastWifiStatusMs = 0;
+static unsigned long lastBleStatusMs = 0;
+static bool wifiResetSuppressReleases = false;
+static bool pairingGestureSuppress = false;
 
 static void refreshUi();
 static AgentState agentStateAt(uint8_t agentIndex);
+
+static const char* logicalKeyName(LogicalKey key) {
+  switch (key) {
+    case KEY_LEFT_LOGICAL: return "left";
+    case KEY_MIDDLE_LOGICAL: return "middle";
+    case KEY_RIGHT_LOGICAL: return "right";
+    default: return "unknown";
+  }
+}
+
+static const char* pressActionName(unsigned long heldMs) {
+  return heldMs >= LONG_PRESS_MS ? "long" : "short";
+}
+
+static void emitButtonEvent(LogicalKey key, unsigned long heldMs) {
+  char line[192];
+  snprintf(
+    line,
+    sizeof(line),
+    "{\"type\":\"button_event\",\"key\":\"%s\",\"action\":\"%s\",\"held_ms\":%lu,\"selected_agent\":%u,\"companion_online\":%s}",
+    logicalKeyName(key),
+    pressActionName(heldMs),
+    heldMs,
+    selectedAgent,
+    companionIsOnline() ? "true" : "false"
+  );
+  Serial.println(line);
+  bleGattCommSendLine(line);
+}
 
 static void drawKey(LogicalKey key) {
   Arduino_GFX* g = selectLogicalScreen(key);
@@ -88,8 +128,25 @@ static AgentState agentStateAt(uint8_t agentIndex) {
 }
 
 static void refreshUi() {
+  if (pairingPhase() == PAIRING_PAIRING) {
+    // Pairing screen: code on the round display, prompt on the rect display,
+    // and confirm/cancel hints on the key screens.
+    drawPairingRound(&roundDisplay(), pairingCodeStr());
+    drawPairingRect(rectDisplay(), pairingCodeStr());
+    Arduino_GFX* gl = selectLogicalScreen(KEY_LEFT_LOGICAL);
+    drawEscIcon(gl, "CANCEL");
+    deselectScreenKeys();
+    Arduino_GFX* gm = selectLogicalScreen(KEY_MIDDLE_LOGICAL);
+    drawCheckIcon(gm);
+    deselectScreenKeys();
+    Arduino_GFX* gr = selectLogicalScreen(KEY_RIGHT_LOGICAL);
+    gr->fillScreen(0x0000);
+    deselectScreenKeys();
+    return;
+  }
   drawAllKeys();
   drawRectMetadata(rectDisplay(), agentSlots, selectedAgent, voiceRecording, voiceEditing);
+  drawWifiStatusBar(rectDisplay(), wifiModeLabel(), wifiIpAddress(), wifiApSsid(), wifiApPassword());
   drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, true);
 }
 
@@ -230,10 +287,35 @@ static void removeCurrentAgentSlot() {
 }
 
 static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
+  if (wifiResetSuppressReleases || pairingGestureSuppress) {
+    return;
+  }
+
+  // While the pairing window is open, the keys mean confirm/cancel only.
+  if (pairingPhase() == PAIRING_PAIRING) {
+    if (key == KEY_MIDDLE_LOGICAL) {
+      pairingConfirm();
+      refreshUi();
+    } else if (key == KEY_LEFT_LOGICAL) {
+      pairingCancel();
+      refreshUi();
+    }
+    return;
+  }
+
+  emitButtonEvent(key, heldMs);
+
+  const bool companionHandlesVoice = companionIsOnline();
   const bool longPress = heldMs >= LONG_PRESS_MS;
   if (key == KEY_LEFT_LOGICAL) {
+    if (companionHandlesVoice) {
+      return;
+    }
     handleLeftShort();
   } else if (key == KEY_MIDDLE_LOGICAL) {
+    if (companionHandlesVoice) {
+      return;
+    }
     handleMiddleShort();
   } else if (longPress) {
     if (buttons[KEY_RIGHT_LOGICAL].repeatFired) {
@@ -293,6 +375,79 @@ static void pollButtons() {
 
     handleHeldButton(key, btn, millis());
   }
+
+  bool allPressed = true;
+  bool allReleased = true;
+  for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
+    allPressed = allPressed && buttons[i].stable == LOW;
+    allReleased = allReleased && buttons[i].stable == HIGH;
+  }
+
+  if (wifiResetSuppressReleases && allReleased) {
+    wifiResetSuppressReleases = false;
+  }
+
+  // Enter pairing mode: hold LEFT + RIGHT together (without MIDDLE) for ~3s.
+  // Distinct from the all-three 5s WiFi reset gesture (middle held there).
+  const bool leftRightHeld =
+      buttons[KEY_LEFT_LOGICAL].stable == LOW &&
+      buttons[KEY_RIGHT_LOGICAL].stable == LOW &&
+      buttons[KEY_MIDDLE_LOGICAL].stable == HIGH;
+
+  if (pairingGestureSuppress &&
+      buttons[KEY_LEFT_LOGICAL].stable == HIGH &&
+      buttons[KEY_RIGHT_LOGICAL].stable == HIGH) {
+    pairingGestureSuppress = false;
+  }
+
+  if (!wifiResetSuppressReleases && !pairingGestureSuppress && leftRightHeld &&
+      pairingPhase() != PAIRING_PAIRING &&
+      now - buttons[KEY_LEFT_LOGICAL].pressedMs >= PAIRING_ENTER_HOLD_MS &&
+      now - buttons[KEY_RIGHT_LOGICAL].pressedMs >= PAIRING_ENTER_HOLD_MS) {
+    pairingGestureSuppress = true;
+    pairingEnterMode();
+    refreshUi();
+  }
+
+  if (!wifiResetSuppressReleases && allPressed) {
+    bool heldLongEnough = true;
+    for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
+      heldLongEnough = heldLongEnough && now - buttons[i].pressedMs >= WIFI_RESET_HOLD_MS;
+    }
+    if (heldLongEnough) {
+      wifiResetSuppressReleases = true;
+      wifiForgetCredentials();
+      refreshUi();
+    }
+  }
+}
+
+static void pollWifiStatusUi(unsigned long now) {
+  if (pairingPhase() == PAIRING_PAIRING) {
+    return;
+  }
+  if (now - lastWifiStatusMs < WIFI_STATUS_INTERVAL_MS) {
+    return;
+  }
+  lastWifiStatusMs = now;
+  drawWifiStatusBar(rectDisplay(), wifiModeLabel(), wifiIpAddress(), wifiApSsid(), wifiApPassword());
+}
+
+static void pollBleStatus(unsigned long now) {
+  if (!bleGattCommConnected() || now - lastBleStatusMs < BLE_STATUS_INTERVAL_MS) {
+    return;
+  }
+  lastBleStatusMs = now;
+
+  char line[160];
+  snprintf(
+    line,
+    sizeof(line),
+    "{\"type\":\"ble_status\",\"selected_agent\":%u,\"companion_online\":%s}",
+    selectedAgent,
+    companionIsOnline() ? "true" : "false"
+  );
+  bleGattCommSendLine(line);
 }
 
 void setup() {
@@ -300,6 +455,10 @@ void setup() {
 
   hidBegin();
   beginDisplayHardware();
+  wifiConfigBegin();
+  bleGattCommSetRegistry(agentSlots, &selectedAgent);
+  bleGattCommBegin(handleAgentRegistryLine);
+  pairingBegin();
 
   for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
     buttons[i].lastRaw = digitalRead(pinForLogical(static_cast<LogicalKey>(i)));
@@ -315,8 +474,9 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+  wifiConfigLoop();
 
-  if (now - lastFrameMs >= FRAME_INTERVAL_MS) {
+  if (pairingPhase() != PAIRING_PAIRING && now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
     currentFrame = (currentFrame + 1) % EXPR_FRAME_COUNT;
     drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, false);
@@ -325,5 +485,10 @@ void loop() {
   if (pollAgentRegistrySerial(Serial, agentSlots, selectedAgent)) {
     refreshUi();
   }
+  if (pairingPoll(now)) {
+    refreshUi();
+  }
+  pollWifiStatusUi(now);
+  pollBleStatus(now);
   pollButtons();
 }

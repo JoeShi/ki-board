@@ -1,10 +1,3 @@
-/**
- * webpage.h - Web 配置前端页面 (嵌入 PROGMEM)
- *
- * 原型阶段把 HTML/CSS/JS 嵌入固件, 省去 LittleFS 上传步骤。
- * 页面通过 REST API (/api/config, /api/keys) 与设备交互。
- */
-
 #ifndef WEBPAGE_H
 #define WEBPAGE_H
 
@@ -16,130 +9,165 @@ static const char INDEX_HTML[] PROGMEM = R"HTMLPAGE(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Kiro 键盘配置</title>
+<title>Kiro Keyboard WiFi</title>
 <style>
-  body { font-family: system-ui, sans-serif; background:#1e1e1e; color:#ddd; margin:0; padding:16px; }
-  h1 { font-size:20px; color:#4ec9b0; }
-  h2 { font-size:15px; color:#9cdcfe; margin-top:24px; border-bottom:1px solid #333; padding-bottom:4px; }
-  .card { background:#252526; border:1px solid #333; border-radius:8px; padding:12px; margin:10px 0; }
-  label { display:inline-block; width:70px; color:#999; font-size:13px; }
-  input[type=text] { background:#3c3c3c; border:1px solid #555; color:#ddd; border-radius:4px; padding:4px 6px; width:120px; }
-  select { background:#3c3c3c; border:1px solid #555; color:#ddd; border-radius:4px; padding:4px; }
-  .mods { display:inline-block; }
-  .mods label { width:auto; margin-right:8px; color:#ccc; }
-  .row { margin:6px 0; }
-  button { background:#0e639c; color:#fff; border:none; border-radius:4px; padding:8px 18px; font-size:14px; cursor:pointer; margin-top:14px; }
-  button:hover { background:#1177bb; }
-  #status { margin-left:12px; color:#4ec9b0; }
-  .small { font-size:12px; color:#888; }
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 18px;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #101214;
+    color: #e7ecef;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 8px 0 4px; color: #7dd3fc; }
+  p { color: #9aa6ad; line-height: 1.5; }
+  section {
+    border: 1px solid #2f3a40;
+    border-radius: 8px;
+    padding: 14px;
+    margin: 14px 0;
+    background: #171b1f;
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; color: #c7d2da; }
+  label { display: block; font-size: 13px; color: #9aa6ad; margin: 12px 0 6px; }
+  input, select {
+    width: 100%;
+    min-height: 40px;
+    border: 1px solid #46545c;
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: #0d1114;
+    color: #f4f7f8;
+    font-size: 15px;
+  }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  button {
+    min-height: 40px;
+    border: 0;
+    border-radius: 6px;
+    padding: 8px 14px;
+    background: #0e7490;
+    color: white;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button.secondary { background: #334155; }
+  button.danger { background: #b91c1c; }
+  button:disabled { opacity: .55; cursor: default; }
+  .kv { display: grid; grid-template-columns: 120px 1fr; gap: 8px; font-size: 14px; }
+  .kv div:nth-child(odd) { color: #8f9ba3; }
+  .status { min-height: 22px; margin-top: 12px; color: #86efac; }
+  .error { color: #fca5a5; }
+  .muted { color: #8f9ba3; font-size: 13px; }
 </style>
 </head>
 <body>
-<h1>⌨ Kiro 快捷键盘配置</h1>
-<p class="small">修改后点击"保存并应用"。配置存入设备, 重启后保留。</p>
+<main>
+  <h1>Kiro Keyboard WiFi</h1>
+  <p>配置设备要连接的 WiFi。USB HID 和按键功能不依赖 WiFi。</p>
 
-<h2>按键</h2>
-<div id="keys"></div>
+  <section>
+    <h2>设备状态</h2>
+    <div class="kv">
+      <div>模式</div><div id="mode">--</div>
+      <div>当前 WiFi</div><div id="currentSsid">--</div>
+      <div>IP</div><div id="ip">--</div>
+      <div>mDNS</div><div id="mdns">--</div>
+      <div>配置热点</div><div id="ap">--</div>
+    </div>
+  </section>
 
-<h2>旋钮</h2>
-<div id="encoder"></div>
+  <section>
+    <h2>连接 WiFi</h2>
+    <label for="network">网络</label>
+    <div class="row">
+      <select id="network"></select>
+      <button class="secondary" id="scanBtn" onclick="scanNetworks()">扫描</button>
+    </div>
+    <label for="ssid">SSID</label>
+    <input id="ssid" autocomplete="off" placeholder="输入 WiFi 名称">
+    <label for="password">密码</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="开放网络可留空">
+    <button id="saveBtn" onclick="saveWifi()">保存并连接</button>
+    <div id="saveStatus" class="status"></div>
+  </section>
 
-<button onclick="saveConfig()">保存并应用</button>
-<span id="status"></span>
+  <section>
+    <h2>重置</h2>
+    <p class="muted">清除已保存 WiFi 后，设备会回到配置热点模式。也可以在设备上三键同时长按 5 秒清除。</p>
+    <button class="danger" onclick="forgetWifi()">清除 WiFi 配置</button>
+  </section>
+</main>
 
 <script>
-let KEYS = [], MODS = [];
-let config = null;
+const $ = (id) => document.getElementById(id);
 
-async function init() {
-  const meta = await (await fetch('/api/keys')).json();
-  KEYS = meta.keys; MODS = meta.modifiers;
-  config = await (await fetch('/api/config')).json();
-  render();
+async function loadStatus() {
+  const status = await (await fetch('/api/wifi/status')).json();
+  $('mode').textContent = status.mode || '--';
+  $('currentSsid').textContent = status.ssid || '--';
+  $('ip').textContent = status.ip || '--';
+  $('mdns').textContent = status.mdns || '--';
+  $('ap').textContent = `${status.apSsid || '--'} / ${status.apPassword || '--'}`;
 }
 
-function keySelect(val) {
-  let s = '<select>';
-  s += '<option value="">(无)</option>';
-  for (const k of KEYS) s += `<option ${k===val?'selected':''}>${k}</option>`;
-  s += '</select>';
-  return s;
-}
-
-function modBoxes(active) {
-  active = active || [];
-  let s = '<span class="mods">';
-  for (const m of MODS) {
-    const on = active.includes(m) ? 'checked' : '';
-    s += `<label><input type="checkbox" value="${m}" ${on}>${m}</label>`;
+async function scanNetworks() {
+  $('scanBtn').disabled = true;
+  $('scanBtn').textContent = '扫描中';
+  try {
+    const data = await (await fetch('/api/wifi/scan')).json();
+    const select = $('network');
+    select.innerHTML = '<option value="">手动输入</option>';
+    for (const item of data.networks || []) {
+      const option = document.createElement('option');
+      option.value = item.ssid;
+      option.textContent = `${item.ssid} (${item.rssi} dBm)${item.secure ? '' : ' open'}`;
+      select.appendChild(option);
+    }
+  } finally {
+    $('scanBtn').disabled = false;
+    $('scanBtn').textContent = '扫描';
   }
-  s += '</span>';
-  return s;
 }
 
-function actionRow(prefix, a) {
-  a = a || {type:'none'};
-  return `<div class="row" data-prefix="${prefix}">
-    <label>标签</label><input type="text" class="f-label" value="${a.label||''}">
-    <label>按键</label>${keySelect(a.key||'')}
-    ${modBoxes(a.modifiers)}
-  </div>`;
+$('network').addEventListener('change', () => {
+  if ($('network').value) $('ssid').value = $('network').value;
+});
+
+async function saveWifi() {
+  $('saveBtn').disabled = true;
+  $('saveStatus').className = 'status';
+  $('saveStatus').textContent = '保存中...';
+  try {
+    const res = await fetch('/api/wifi', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ssid: $('ssid').value.trim(), password: $('password').value})
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'failed');
+    $('saveStatus').textContent = '已保存，设备正在连接。';
+    setTimeout(loadStatus, 1500);
+  } catch (err) {
+    $('saveStatus').className = 'status error';
+    $('saveStatus').textContent = '保存失败，请检查 SSID。';
+  } finally {
+    $('saveBtn').disabled = false;
+  }
 }
 
-function render() {
-  // 按键
-  let kh = '';
-  config.keys.forEach((k, i) => {
-    kh += `<div class="card"><b>Key ${i+1}</b>${actionRow('key'+i, k)}</div>`;
-  });
-  document.getElementById('keys').innerHTML = kh;
-
-  // 旋钮
-  const e = config.encoder;
-  let eh = `<div class="card"><b>长按</b>${actionRow('encLong', e.longPress)}</div>`;
-  e.modes.forEach((m, i) => {
-    eh += `<div class="card"><b>模式 ${i+1}: </b>
-      <input type="text" class="m-label" data-mode="${i}" value="${m.label||''}" style="width:90px">
-      <div>顺时针 ${actionRow('mode'+i+'cw', m.cw)}</div>
-      <div>逆时针 ${actionRow('mode'+i+'ccw', m.ccw)}</div>
-    </div>`;
-  });
-  document.getElementById('encoder').innerHTML = eh;
+async function forgetWifi() {
+  await fetch('/api/wifi/forget', {method: 'POST'});
+  $('password').value = '';
+  await loadStatus();
 }
 
-function readAction(div) {
-  const label = div.querySelector('.f-label').value;
-  const key = div.querySelector('select').value;
-  const mods = [...div.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value);
-  if (!key) return {type:'none', label:label};
-  return {type:'hotkey', label:label, key:key, modifiers:mods};
-}
-
-function saveConfig() {
-  const rows = document.querySelectorAll('.row');
-  // 按键
-  config.keys.forEach((k, i) => {
-    const div = document.querySelector('[data-prefix="key'+i+'"]');
-    Object.assign(config.keys[i], readAction(div));
-  });
-  // 旋钮长按
-  Object.assign(config.encoder.longPress, readAction(document.querySelector('[data-prefix="encLong"]')));
-  // 模式
-  config.encoder.modes.forEach((m, i) => {
-    const lbl = document.querySelector('.m-label[data-mode="'+i+'"]').value;
-    config.encoder.modes[i].label = lbl;
-    Object.assign(config.encoder.modes[i].cw, readAction(document.querySelector('[data-prefix="mode'+i+'cw"]')));
-    Object.assign(config.encoder.modes[i].ccw, readAction(document.querySelector('[data-prefix="mode'+i+'ccw"]')));
-  });
-
-  document.getElementById('status').textContent = '保存中...';
-  fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(config)})
-    .then(r => r.json())
-    .then(d => { document.getElementById('status').textContent = d.ok ? '✓ 已保存' : '✗ 失败'; })
-    .catch(() => { document.getElementById('status').textContent = '✗ 网络错误'; });
-}
-
-init();
+loadStatus();
+scanNetworks();
+setInterval(loadStatus, 3000);
 </script>
 </body>
 </html>

@@ -1,100 +1,126 @@
-/**
- * webconfig.cpp - Web 配置服务实现
- *
- * 路由:
- *   GET  /            -> 配置页面 (HTML)
- *   GET  /api/keys    -> 可用键名 + 修饰键名 (供下拉列表)
- *   GET  /api/config  -> 当前按键映射 (JSON)
- *   POST /api/config  -> 保存新映射 (JSON) -> NVS, 并触发回调
- */
-
 #include "webconfig.h"
 #include "webpage.h"
-#include "config.h"
-#include "keymap.h"
-#include "keyregistry.h"
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include "wifi_config.h"
 #include <ArduinoJson.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
+#include <WiFi.h>
 
 static AsyncWebServer s_server(80);
-static ConfigChangedCallback s_onChanged = nullptr;
-
-// POST body 累积缓冲 (异步分块到达)
+static bool s_started = false;
+static bool s_mdnsStarted = false;
 static String s_postBody;
 
-// GET /api/keys: 返回可用键名和修饰键名
-static void handleGetKeys(AsyncWebServerRequest* request) {
-    JsonDocument doc;
-    JsonArray keys = doc["keys"].to<JsonArray>();
-    const char* names[128];
-    uint16_t n = allKeyNames(names, 128);
-    for (uint16_t i = 0; i < n; i++) keys.add(names[i]);
-
-    JsonArray mods = doc["modifiers"].to<JsonArray>();
-    const char* modNames[8];
-    uint8_t mn = allModifierNames(modNames, 8);
-    for (uint8_t i = 0; i < mn; i++) mods.add(modNames[i]);
-
-    String out;
-    serializeJson(doc, out);
-    request->send(200, "application/json", out);
+static void sendJson(AsyncWebServerRequest* request, JsonDocument& doc, int status = 200) {
+  String out;
+  serializeJson(doc, out);
+  request->send(status, "application/json", out);
 }
 
-// GET /api/config: 返回当前映射
-static void handleGetConfig(AsyncWebServerRequest* request) {
-    request->send(200, "application/json", keymapToJson());
+static void handleStatus(AsyncWebServerRequest* request) {
+  JsonDocument doc;
+  doc["mode"] = wifiModeLabel();
+  doc["connected"] = wifiIsConnected();
+  doc["hasCredentials"] = wifiHasSavedCredentials();
+  doc["ssid"] = wifiCurrentSsid();
+  doc["ip"] = wifiIpAddress();
+  doc["deviceCode"] = wifiDeviceCode();
+  doc["apSsid"] = wifiApSsid();
+  doc["apPassword"] = wifiApPassword();
+  doc["mdns"] = s_mdnsStarted ? "kirokb.local" : "";
+  sendJson(request, doc);
 }
 
-// POST /api/config: 应用并保存新映射
-static void handlePostConfigBody(AsyncWebServerRequest* request, uint8_t* data,
-                                 size_t len, size_t index, size_t total) {
-    if (index == 0) s_postBody = "";
-    s_postBody.concat((const char*)data, len);
+static void handleScan(AsyncWebServerRequest* request) {
+  int count = WiFi.scanNetworks(false, true);
 
-    // 收齐所有分块后处理
-    if (index + len == total) {
-        bool ok = keymapFromJson(s_postBody);
-        if (ok) {
-            keymapSave();
-            if (s_onChanged) s_onChanged();
-        }
-        s_postBody = "";
-
-        JsonDocument doc;
-        doc["ok"] = ok;
-        String out;
-        serializeJson(doc, out);
-        request->send(ok ? 200 : 400, "application/json", out);
-    }
+  JsonDocument doc;
+  JsonArray networks = doc["networks"].to<JsonArray>();
+  for (int i = 0; i < count; i++) {
+    JsonObject network = networks.add<JsonObject>();
+    network["ssid"] = WiFi.SSID(i);
+    network["rssi"] = WiFi.RSSI(i);
+    network["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+  }
+  WiFi.scanDelete();
+  sendJson(request, doc);
 }
 
-void webConfigBegin(ConfigChangedCallback onChanged) {
-    s_onChanged = onChanged;
+static void handleWifiBody(AsyncWebServerRequest* request, uint8_t* data,
+                           size_t len, size_t index, size_t total) {
+  if (index == 0) {
+    s_postBody = "";
+  }
+  s_postBody.concat(reinterpret_cast<const char*>(data), len);
 
-    // 启动 AP 热点 (开放, 无密码)
-    WiFi.mode(WIFI_AP);
-    WiFi.softAP(WIFI_AP_SSID);
-    Serial.printf("[WEB] AP: %s  IP: %s\n",
-                  WIFI_AP_SSID, WiFi.softAPIP().toString().c_str());
+  if (index + len != total) {
+    return;
+  }
 
-    // 配置页面
-    s_server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
-        request->send_P(200, "text/html", INDEX_HTML);
-    });
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, s_postBody);
+  s_postBody = "";
 
-    // REST API
-    s_server.on("/api/keys", HTTP_GET, handleGetKeys);
-    s_server.on("/api/config", HTTP_GET, handleGetConfig);
-    s_server.on("/api/config", HTTP_POST,
-        [](AsyncWebServerRequest* request) {},  // onRequest (body 在下面处理)
-        nullptr,                                 // onUpload
-        handlePostConfigBody);                   // onBody
+  JsonDocument response;
+  if (err) {
+    response["ok"] = false;
+    response["error"] = "invalid_json";
+    sendJson(request, response, 400);
+    return;
+  }
 
-    s_server.onNotFound([](AsyncWebServerRequest* request) {
-        request->send(404, "text/plain", "Not found");
-    });
+  const char* ssid = doc["ssid"] | "";
+  const char* password = doc["password"] | "";
+  bool ok = wifiSaveCredentials(String(ssid), String(password));
+  response["ok"] = ok;
+  if (!ok) {
+    response["error"] = "invalid_or_not_saved";
+  }
+  sendJson(request, response, ok ? 200 : 400);
+}
 
-    s_server.begin();
-    Serial.println("[WEB] Server started. Open http://192.168.4.1");
+static void handleForget(AsyncWebServerRequest* request) {
+  wifiForgetCredentials();
+  JsonDocument doc;
+  doc["ok"] = true;
+  sendJson(request, doc);
+}
+
+void webConfigBegin() {
+  if (s_started) {
+    return;
+  }
+  s_started = true;
+
+  s_server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
+    request->send_P(200, "text/html", INDEX_HTML);
+  });
+  s_server.on("/api/wifi/status", HTTP_GET, handleStatus);
+  s_server.on("/api/wifi/scan", HTTP_GET, handleScan);
+  s_server.on("/api/wifi", HTTP_POST,
+              [](AsyncWebServerRequest* request) {},
+              nullptr,
+              handleWifiBody);
+  s_server.on("/api/wifi/forget", HTTP_POST, handleForget);
+
+  s_server.onNotFound([](AsyncWebServerRequest* request) {
+    request->send(404, "text/plain", "Not found");
+  });
+
+  s_server.begin();
+  Serial.println("[WEB] Server started");
+}
+
+void webConfigStartMdns() {
+  if (s_mdnsStarted) {
+    return;
+  }
+
+  if (MDNS.begin("kirokb")) {
+    MDNS.addService("http", "tcp", 80);
+    s_mdnsStarted = true;
+    Serial.println("[WEB] mDNS: http://kirokb.local");
+  } else {
+    Serial.println("[WEB] mDNS start failed");
+  }
 }

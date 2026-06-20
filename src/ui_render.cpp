@@ -203,6 +203,35 @@ void drawRectMetadata(Arduino_GFX& rectLcd, const AgentSlot* slots,
   drawAgentTile(rectLcd, slots, selectedAgent, voiceRecording, voiceEditing, 3, rightX, bottomY, tileW, tileH);
 }
 
+void drawWifiStatusBar(Arduino_GFX& rectLcd, const String& mode,
+                       const String& ip, const String& apSsid,
+                       const String& apPassword) {
+  const int y = rectLcd.height() - 18;
+  rectLcd.fillRect(0, y, rectLcd.width(), 18, 0x0000);
+  rectLcd.drawFastHLine(0, y, rectLcd.width(), 0x2945);
+  rectLcd.setTextSize(1);
+  rectLcd.setTextColor(mode == "AP" ? 0xFFE0 : 0x07FF);
+  rectLcd.setCursor(6, y + 5);
+
+  if (mode == "AP") {
+    rectLcd.print(apSsid);
+    rectLcd.print(" ");
+    rectLcd.print(apPassword);
+    rectLcd.print(" 192.168.4.1");
+    return;
+  }
+
+  rectLcd.print("WiFi ");
+  rectLcd.print(mode);
+  if (ip.length() > 0) {
+    rectLcd.print(" ");
+    rectLcd.print(ip);
+  }
+  if (mode == "STA") {
+    rectLcd.print(" kirokb.local");
+  }
+}
+
 void drawExprFrame(Arduino_GFX& roundLcd, AgentState selectedState,
                    bool voiceRecording, uint8_t& currentExpr,
                    uint8_t& currentFrame, bool clear) {
@@ -219,4 +248,28 @@ void drawExprFrame(Arduino_GFX& roundLcd, AgentState selectedState,
   const int x = (160 - EXPR_FRAME_W) / 2;
   const int y = (160 - EXPR_FRAME_H) / 2;
   roundLcd.draw16bitRGBBitmap(x, y, frame, EXPR_FRAME_W, EXPR_FRAME_H);
+}
+
+void drawPairingRound(Arduino_GFX* g, const char* code) {
+  const uint16_t cyan = 0x07FF;
+  g->fillScreen(0x0000);
+  drawCenteredText(g, "PAIR", 30, 2, cyan);
+  drawCenteredText(g, code, 78, 3, 0xFFFF);
+  drawCenteredText(g, "check on Mac", 118, 1, 0x8410);
+}
+
+void drawPairingRect(Arduino_GFX& rectLcd, const char* code) {
+  const uint16_t cyan = 0x07FF;
+  const uint16_t green = 0x07E0;
+  const uint16_t red = 0xF800;
+  rectLcd.fillScreen(0x0000);
+  drawCenteredText(&rectLcd, "Pair with Mac?", 14, 2, cyan);
+  drawCenteredText(&rectLcd, code, 44, 4, 0xFFFF);
+  rectLcd.setTextSize(2);
+  rectLcd.setTextColor(green);
+  rectLcd.setCursor(10, rectLcd.height() - 28);
+  rectLcd.print("OK confirm");
+  rectLcd.setTextColor(red);
+  rectLcd.setCursor(10, rectLcd.height() - 54);
+  rectLcd.print("ESC cancel");
 }

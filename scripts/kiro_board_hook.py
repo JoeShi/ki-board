@@ -18,6 +18,8 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
+import urllib.request
 from typing import Optional
 
 
@@ -71,6 +73,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--serial-port",
         help="Optional serial port to write JSONL events to (for example /dev/cu.usbmodem5B901608471)",
+    )
+    parser.add_argument(
+        "--companion-url",
+        default=os.environ.get("KIRO_COMPANION_HOOK_URL", "http://127.0.0.1:47218/hook"),
+        help="Local companion hook endpoint. If unavailable, the script falls back to serial.",
     )
     return parser.parse_args()
 
@@ -175,6 +182,22 @@ def emit_line(line: str, serial_port: Optional[str]) -> None:
     print(line)
 
 
+def emit_to_companion(line: str, companion_url: str) -> bool:
+    if not companion_url:
+        return False
+    request = urllib.request.Request(
+        companion_url,
+        data=line.encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=0.4) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
 def main() -> int:
     args = parse_args()
     event = read_hook_event()
@@ -194,7 +217,11 @@ def main() -> int:
                 file=sys.stderr,
             )
 
-    emit_line(json.dumps(payload, separators=(",", ":")), serial_port)
+    line = json.dumps(payload, separators=(",", ":"))
+    if emit_to_companion(line, args.companion_url):
+        return 0
+
+    emit_line(line, serial_port)
     return 0
 
 
