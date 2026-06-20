@@ -67,17 +67,46 @@ static const char* pressActionName(unsigned long heldMs) {
   return heldMs >= LONG_PRESS_MS ? "long" : "short";
 }
 
+static void emitButtonEventWithAction(LogicalKey key, const char* action, unsigned long heldMs);
+
+static const char* voiceIntentName(LogicalKey key) {
+  if (key == KEY_MIDDLE_LOGICAL) {
+    if (voiceEditing) return "voice_send_edit";
+    if (voiceRecording) return "voice_commit_send";
+    return "voice_start";
+  }
+  if (key == KEY_LEFT_LOGICAL) {
+    if (voiceRecording) return "voice_commit_edit";
+    if (voiceEditing) return "voice_exit_edit";
+    return "";
+  }
+  if (key == KEY_RIGHT_LOGICAL) {
+    if (voiceEditing) return "voice_delete";
+    if (voiceRecording) return "voice_cancel";
+    return "";
+  }
+  return "";
+}
+
 static void emitButtonEvent(LogicalKey key, unsigned long heldMs) {
-  char line[192];
+  emitButtonEventWithAction(key, pressActionName(heldMs), heldMs);
+}
+
+static void emitButtonEventWithAction(LogicalKey key, const char* action, unsigned long heldMs) {
+  char line[320];
+  const char* voiceIntent = voiceIntentName(key);
   snprintf(
     line,
     sizeof(line),
-    "{\"type\":\"button_event\",\"key\":\"%s\",\"action\":\"%s\",\"held_ms\":%lu,\"selected_agent\":%u,\"companion_online\":%s}",
+    "{\"type\":\"button_event\",\"key\":\"%s\",\"action\":\"%s\",\"held_ms\":%lu,\"selected_agent\":%u,\"companion_online\":%s,\"voice_recording\":%s,\"voice_editing\":%s,\"voice_intent\":\"%s\"}",
     logicalKeyName(key),
-    pressActionName(heldMs),
+    action,
     heldMs,
     selectedAgent,
-    companionIsOnline() ? "true" : "false"
+    companionIsOnline() ? "true" : "false",
+    voiceRecording ? "true" : "false",
+    voiceEditing ? "true" : "false",
+    voiceIntent
   );
   Serial.println(line);
   bleGattCommSendLine(line);
@@ -151,7 +180,7 @@ static void refreshUi() {
   drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, true);
 }
 
-static void switchAgent() {
+static void switchAgent(bool sendHid) {
   if (voiceRecording) {
     hidTap(KEY_ESC);
     delay(DICTATION_COMMIT_DELAY_MS);
@@ -160,7 +189,9 @@ static void switchAgent() {
   selectedAgent = (selectedAgent + 1) % AGENT_COUNT;
   voiceRecording = false;
   voiceEditing = false;
-  sendCommandRightBracket();
+  if (sendHid) {
+    sendCommandRightBracket();
+  }
   Serial.printf("[AGENT] selected Agent %d\n", selectedAgent + 1);
   refreshUi();
 }
@@ -181,8 +212,8 @@ static void startVoiceInput() {
 }
 
 static void sendVoiceInput() {
-  // System engine submits the dictated text with Return. Doubao engine: the
-  // companion pastes the transcript and leaves submission to the user.
+  // System engine submits with HID Return. Doubao text operations are executed
+  // by the companion so they use the same focus path as paste.
   if (!voiceEngineIsDoubao()) {
     hidTap(KEY_RETURN);
   }
@@ -197,9 +228,13 @@ static void sendVoiceInput() {
 }
 
 static void stopDictationForEditing() {
-  hidTap(KEY_ESC);
   voiceRecording = false;
-  voiceEditing = true;
+  if (voiceEngineIsDoubao()) {
+    voiceEditing = true;
+  } else {
+    hidTap(KEY_ESC);
+    voiceEditing = true;
+  }
   Serial.printf("[VOICE] Agent %d stopped dictation, editing input\n", selectedAgent + 1);
   refreshUi();
 }
@@ -250,11 +285,15 @@ static void handleLeftShort() {
 }
 
 static void backspaceFromRecording() {
-  hidTap(KEY_ESC);
-  delay(DICTATION_COMMIT_DELAY_MS);
   voiceRecording = false;
-  voiceEditing = true;
-  hidTap(KEY_BACKSPACE);
+  if (voiceEngineIsDoubao()) {
+    voiceEditing = false;
+  } else {
+    hidTap(KEY_ESC);
+    delay(DICTATION_COMMIT_DELAY_MS);
+    voiceEditing = true;
+    hidTap(KEY_BACKSPACE);
+  }
   Serial.printf("[VOICE] Agent %d stopped dictation and backspaced\n", selectedAgent + 1);
   refreshUi();
 }
@@ -266,12 +305,14 @@ static void handleRightShort() {
   }
 
   if (voiceEditing) {
-    hidTap(KEY_BACKSPACE);
+    if (!voiceEngineIsDoubao()) {
+      hidTap(KEY_BACKSPACE);
+    }
     Serial.println("[VOICE] Backspace");
     return;
   }
 
-  switchAgent();
+  switchAgent(!companionIsOnline());
 }
 
 static void handleRightLong() {
@@ -281,7 +322,9 @@ static void handleRightLong() {
   }
 
   if (voiceEditing) {
-    hidTap(KEY_BACKSPACE);
+    if (!voiceEngineIsDoubao()) {
+      hidTap(KEY_BACKSPACE);
+    }
     Serial.println("[VOICE] Backspace");
     return;
   }
@@ -317,17 +360,10 @@ static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
 
   emitButtonEvent(key, heldMs);
 
-  const bool companionHandlesVoice = companionIsOnline();
   const bool longPress = heldMs >= LONG_PRESS_MS;
   if (key == KEY_LEFT_LOGICAL) {
-    if (companionHandlesVoice) {
-      return;
-    }
     handleLeftShort();
   } else if (key == KEY_MIDDLE_LOGICAL) {
-    if (companionHandlesVoice) {
-      return;
-    }
     handleMiddleShort();
   } else if (longPress) {
     if (buttons[KEY_RIGHT_LOGICAL].repeatFired) {
@@ -356,7 +392,11 @@ static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now
     return;
   }
 
-  hidTap(KEY_BACKSPACE);
+  if (voiceEngineIsDoubao()) {
+    emitButtonEventWithAction(KEY_RIGHT_LOGICAL, "repeat", now - btn.pressedMs);
+  } else {
+    hidTap(KEY_BACKSPACE);
+  }
   btn.repeatFired = true;
   btn.lastRepeatMs = millis();
   Serial.println("[VOICE] Backspace repeat");
@@ -465,6 +505,7 @@ static void pollBleStatus(unsigned long now) {
 void setup() {
   Serial.begin(115200);
 
+  agentRegistryBegin();
   hidBegin();
   beginDisplayHardware();
   wifiConfigBegin();

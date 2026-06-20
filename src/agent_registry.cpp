@@ -17,6 +17,7 @@ static unsigned long s_companionLastSeenMs = 0;
 static bool s_voiceEngineDoubao = false;
 static constexpr const char* KEYMAP_NAMESPACE = "kirokb";
 static constexpr const char* KEYMAP_KEY = "companion_keymap";
+static constexpr const char* VOICE_ENGINE_KEY = "voice_engine";
 static constexpr const char* DEFAULT_KEYMAP_JSON =
   "{\"keys\":["
   "{\"label\":\"ESC\",\"action_type\":\"hotkey\",\"key\":\"Escape\",\"modifiers\":[]},"
@@ -51,6 +52,16 @@ void clearAgentSlot(AgentSlot& agent) {
   agent.state = AGENT_IDLE;
   agent.occupied = false;
   agent.lastUpdateMs = 0;
+}
+
+void agentRegistryBegin() {
+  Preferences prefs;
+  if (prefs.begin(KEYMAP_NAMESPACE, true)) {
+    String engine = prefs.getString(VOICE_ENGINE_KEY, "system");
+    s_voiceEngineDoubao = (engine == "doubao");
+    prefs.end();
+  }
+  Serial.printf("[VOICE] stored engine -> %s\n", s_voiceEngineDoubao ? "doubao" : "system");
 }
 
 void companionMarkSeen() {
@@ -250,6 +261,19 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
   if (strcmp(type, "voice_engine") == 0) {
     const char* engine = doc["engine"] | "system";
     s_voiceEngineDoubao = (strcmp(engine, "doubao") == 0);
+    bool persisted = false;
+    Preferences prefs;
+    if (prefs.begin(KEYMAP_NAMESPACE, false)) {
+      persisted = prefs.putString(VOICE_ENGINE_KEY, s_voiceEngineDoubao ? "doubao" : "system") > 0;
+      prefs.end();
+    }
+    JsonDocument response;
+    response["type"] = "voice_engine_response";
+    response["ok"] = persisted;
+    response["engine"] = s_voiceEngineDoubao ? "doubao" : "system";
+    response["persisted"] = persisted;
+    serializeJson(response, output);
+    output.println();
     Serial.printf("[VOICE] engine -> %s\n", s_voiceEngineDoubao ? "doubao" : "system");
     companionMarkSeen();
     return false;

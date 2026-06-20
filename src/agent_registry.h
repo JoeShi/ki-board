@@ -24,6 +24,7 @@ const char* agentStateName(AgentState state);
 AgentState agentStateAt(const AgentSlot* slots, uint8_t agentIndex);
 const char* agentDisplayName(const AgentSlot* slots, uint8_t agentIndex);
 void clearAgentSlot(AgentSlot& agent);
+void agentRegistryBegin();
 bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selectedAgent);
 bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output);
 bool companionIsOnline();

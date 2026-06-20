@@ -12,6 +12,7 @@ let _voiceRecording = false;
 async function _openVoiceOverlay() {
   const existing = await WebviewWindow.getByLabel("voice-overlay");
   if (existing) return;
+  await invoke("hide_main_window").catch(() => {});
   new WebviewWindow("voice-overlay", {
     url: "voice-overlay.html",
     title: "",
@@ -23,7 +24,9 @@ async function _openVoiceOverlay() {
     resizable: false,
     center: true,
     skipTaskbar: true,
+    focus: false,
   });
+  await invoke("hide_main_window").catch(() => {});
 }
 
 async function _closeVoiceOverlay() {
@@ -33,13 +36,17 @@ async function _closeVoiceOverlay() {
 
 async function _handleVoiceToggle() {
   if (!_voiceRecording) {
-    _voiceRecording = true;
-    await _openVoiceOverlay();
-    await invoke("start_recording").catch(() => { _voiceRecording = false; });
+    await invoke("start_recording")
+      .then(async () => {
+        _voiceRecording = true;
+        await _openVoiceOverlay();
+      })
+      .catch(() => { _voiceRecording = false; });
   } else {
     _voiceRecording = false;
     await invoke("stop_recording_and_transcribe").catch(() => {});
-    setTimeout(() => _closeVoiceOverlay(), 1500);
+    // Overlay will be closed by the "voice-recording-stop" event from backend
+    // after paste completes.
   }
 }
 
@@ -47,7 +54,7 @@ async function _handleVoiceCancel() {
   if (!_voiceRecording) return;
   _voiceRecording = false;
   await invoke("cancel_recording").catch(() => {});
-  await _closeVoiceOverlay();
+  _closeVoiceOverlay();
 }
 
 register("CommandOrControl+Shift+Space", (e) => {
@@ -57,6 +64,17 @@ register("CommandOrControl+Shift+Space", (e) => {
 register("CommandOrControl+Shift+.", (e) => {
   if (e.state === "Pressed") _handleVoiceCancel();
 }).catch((err) => console.error("shortcut failed:", err));
+
+// Also open/close overlay when triggered by board button (backend emits events).
+listen("voice-recording-start", () => {
+  _voiceRecording = true;
+  invoke("hide_main_window").catch(() => {});
+  _openVoiceOverlay();
+});
+listen("voice-recording-stop", () => {
+  _voiceRecording = false;
+  _closeVoiceOverlay();
+});
 
 type Settings = {
   connection_mode: string;
@@ -170,6 +188,7 @@ function App() {
   const [hasApiKey, setHasApiKey] = useState(false);
   const [pairCode, setPairCode] = useState<string | null>(null);
   const [pairMessage, setPairMessage] = useState("");
+  const [voiceText, setVoiceText] = useState("");
 
   const boardPorts = useMemo(() => ports.filter((port) => port.kind !== "flash-ch340"), [ports]);
   const flashPorts = useMemo(() => ports.filter((port) => port.kind === "flash-ch340" || port.kind === "usb-serial"), [ports]);
@@ -236,8 +255,12 @@ function App() {
         last_transcript: event.payload.event === "final" ? event.payload.text : current.last_transcript,
         last_error: event.payload.event === "error" ? event.payload.text : current.last_error,
       }));
+      if (event.payload.event === "partial" || event.payload.event === "final") {
+        setVoiceText(event.payload.text);
+      }
       if (event.payload.event === "error") {
         setUiError(event.payload.text);
+        setVoiceText(event.payload.text);
       }
     });
     const unlistenPair = listen<{ event: string; code?: string; reason?: string; name?: string }>(
@@ -359,6 +382,7 @@ function App() {
 
   async function startRecording() {
     setUiError("");
+    setVoiceText("");
     await saveSettings();
     const saved = await invoke<boolean>("has_doubao_api_key");
     setHasApiKey(saved);
@@ -683,11 +707,11 @@ function App() {
                     <strong>{status.busy ? "TRANSCRIBING" : status.recording ? "LISTENING" : "READY"}</strong>
                   </div>
                   <div className="transcript-preview">
-                    {status.last_partial || status.last_transcript || "Click Start and speak to test Doubao transcription."}
+                    {voiceText || "Click Start and speak to test Doubao transcription."}
                   </div>
                   <div className="actions">
                     <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>Start</button>
-                    <button disabled={!status.recording || status.busy} onClick={() => runAction(stopRecording)}>Stop</button>
+                    <button disabled={!status.recording && !status.busy} onClick={() => runAction(stopRecording)}>Stop</button>
                     <button className="secondary" disabled={!status.recording} onClick={() => runAction(cancelRecording)}>Cancel</button>
                   </div>
                 </div>

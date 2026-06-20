@@ -28,7 +28,6 @@ use uuid::Uuid;
 use flate2::read::GzDecoder;
 
 const KEYRING_SERVICE: &str = "kiro-keyboard-companion";
-const KEYRING_DOUBAO_API_KEY: &str = "doubao-api-key";
 const KEYRING_BLE_TOKEN: &str = "ble-pairing-token";
 const HOOK_ADDR: &str = "127.0.0.1:47218";
 // Two-way streaming, optimized variant (bigmodel_async). It only emits a new
@@ -39,7 +38,7 @@ const DEFAULT_DOUBAO_ENDPOINT: &str =
 const DEFAULT_DOUBAO_RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
-const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Settings {
@@ -54,6 +53,8 @@ struct Settings {
     doubao_endpoint: String,
     doubao_resource_id: String,
     doubao_language: String,
+    #[serde(default)]
+    doubao_api_key_file: String,
     paste_after_transcribe: bool,
     // Preferred audio input device name (empty = system default).
     #[serde(default)]
@@ -75,6 +76,7 @@ impl Default for Settings {
             doubao_endpoint: DEFAULT_DOUBAO_ENDPOINT.to_string(),
             doubao_resource_id: DEFAULT_DOUBAO_RESOURCE_ID.to_string(),
             doubao_language: String::new(),
+            doubao_api_key_file: String::new(),
             paste_after_transcribe: true,
             audio_input_device: String::new(),
             voice_engine: default_voice_engine(),
@@ -123,6 +125,9 @@ struct BoardButtonEvent {
     action: String,
     held_ms: Option<u64>,
     selected_agent: Option<u8>,
+    voice_recording: Option<bool>,
+    voice_editing: Option<bool>,
+    voice_intent: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -136,8 +141,9 @@ struct HookPayload {
 }
 
 struct RecordingHandle {
-    stop_tx: Sender<()>,
+    stop_tx: tokio::sync::oneshot::Sender<()>,
     done_rx: Receiver<Result<String, String>>,
+    target_bundle_id: Option<String>,
 }
 
 struct AppStateInner {
@@ -165,10 +171,10 @@ struct AppState {
 
 type SharedState = Arc<AppState>;
 
-fn app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path()
-        .app_data_dir()
-        .map_err(|err| format!("app data dir unavailable: {err}"))
+fn app_data_dir(_app: &AppHandle) -> Result<PathBuf, String> {
+    // Store all config under ~/.ki-board/ (user-visible, survives reinstall).
+    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
+    Ok(PathBuf::from(home).join(".ki-board"))
 }
 
 fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -219,6 +225,65 @@ fn emit_voice(app: &AppHandle, event: &str, text: impl Into<String>) {
         "voice-event",
         serde_json::json!({"event": event, "text": text.into()}),
     );
+}
+
+fn play_sound(name: &str) {
+    let path = format!("/System/Library/Sounds/{name}.aiff");
+    std::process::Command::new("afplay")
+        .arg(&path)
+        .spawn()
+        .ok(); // fire-and-forget, don't block
+}
+
+fn frontmost_bundle_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = Command::new("osascript")
+            .arg("-e")
+            .arg("tell application \"System Events\" to get bundle identifier of first application process whose frontmost is true")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let bundle_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if bundle_id.is_empty() || bundle_id == "com.kiro.keyboard.companion" {
+            None
+        } else {
+            Some(bundle_id)
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+fn activate_app(bundle_id: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application id \"{}\" to activate",
+            bundle_id.replace('"', "\\\"")
+        );
+        let _ = Command::new("osascript").arg("-e").arg(script).output();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bundle_id;
+    }
+}
+
+fn hide_main_window_inner(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    hide_main_window_inner(&app);
+    Ok(())
 }
 
 fn write_board_json_from_arc(
@@ -408,7 +473,17 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
     let Ok(event) = serde_json::from_value::<BoardButtonEvent>(value) else {
         return;
     };
-    log(app, format!("button {} {}", event.key, event.action));
+    log(
+        app,
+        format!(
+            "button {} {} intent={} rec={} edit={}",
+            event.key,
+            event.action,
+            event.voice_intent.as_deref().unwrap_or(""),
+            event.voice_recording.unwrap_or(false),
+            event.voice_editing.unwrap_or(false)
+        ),
+    );
     if let Err(err) = handle_button_event(app, state, event) {
         set_last_error(state, err.clone());
         log(app, format!("error: {err}"));
@@ -420,18 +495,41 @@ fn handle_button_event(
     state: &SharedState,
     event: BoardButtonEvent,
 ) -> Result<(), String> {
+    let engine = state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .settings
+        .voice_engine
+        .clone();
+    if engine == "doubao" {
+        if let Some(intent) = event.voice_intent.as_deref() {
+            match intent {
+                "voice_start" => return start_recording_inner(app.clone(), state),
+                "voice_commit_send" => {
+                    return stop_recording_and_transcribe_inner(app.clone(), state, true);
+                }
+                "voice_commit_edit" => {
+                    return stop_recording_and_transcribe_inner(app.clone(), state, false);
+                }
+                "voice_cancel" => return cancel_recording_inner(app.clone(), state),
+                "voice_send_edit" => return press_return_key(),
+                "voice_delete" => return press_backspace_key(),
+                "voice_exit_edit" => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+
     match (event.key.as_str(), event.action.as_str()) {
         ("middle", "short") => {
-            let engine = state
-                .inner
-                .lock()
-                .map_err(|_| "state lock poisoned")?
-                .settings
-                .voice_engine
-                .clone();
             if engine == "system" {
                 // System dictation is driven entirely on the board via the HID
                 // Control double-tap; the companion stays out of the way.
+                return Ok(());
+            }
+            if event.voice_editing.unwrap_or(false) {
+                // Board is showing the check mark as "send": it owns Enter.
                 return Ok(());
             }
             let recording = state
@@ -440,14 +538,45 @@ fn handle_button_event(
                 .map_err(|_| "state lock poisoned")?
                 .recording
                 .is_some();
-            if recording {
-                stop_recording_and_transcribe_inner(app.clone(), state)
+            if recording || event.voice_recording.unwrap_or(false) {
+                stop_recording_and_transcribe_inner(app.clone(), state, false)
             } else {
                 start_recording_inner(app.clone(), state)
             }
         }
-        ("left", _) => cancel_recording_inner(app.clone(), state),
-        ("right", _) => Ok(()),
+        ("left", _) => {
+            if event.voice_editing.unwrap_or(false) {
+                return Ok(());
+            }
+            let should_commit = {
+                let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+                inner.settings.voice_engine == "doubao" &&
+                    (inner.recording.is_some() || event.voice_recording.unwrap_or(false))
+            };
+            if should_commit {
+                stop_recording_and_transcribe_inner(app.clone(), state, false)
+            } else {
+                cancel_recording_inner(app.clone(), state)
+            }
+        }
+        ("right", _) => {
+            if event.voice_editing.unwrap_or(false) {
+                // Board is showing backspace as "delete character": it owns HID Backspace.
+                return Ok(());
+            }
+            let should_cancel = {
+                let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+                inner.settings.voice_engine == "doubao" &&
+                    (inner.recording.is_some() || event.voice_recording.unwrap_or(false))
+            };
+            if should_cancel {
+                cancel_recording_inner(app.clone(), state)
+            } else if event.action == "short" {
+                press_command_right_bracket_key()
+            } else {
+                Ok(())
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -501,41 +630,27 @@ fn save_settings(
         .settings = settings;
     // Best-effort: keep the board's voice-engine mode in sync (no-op if offline).
     let _ = write_board_json_from_arc(state.inner(), &protocol::voice_engine_payload(&engine));
+    log(&app, format!("voice engine sync requested: {engine}"));
     Ok(())
 }
 
 #[tauri::command]
-fn save_doubao_api_key(state: State<SharedState>, api_key: String) -> Result<(), String> {
-    state
-        .inner
-        .lock()
-        .map_err(|_| "state lock poisoned")?
-        .doubao_api_key_cache = Some(api_key.clone());
-    Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
-        .map_err(|err| format!("keyring unavailable: {err}"))?
-        .set_password(&api_key)
-        .map_err(|err| format!("keyring save failed: {err}"))
+fn save_doubao_api_key(app: AppHandle, state: State<SharedState>, api_key: String) -> Result<(), String> {
+    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    inner.doubao_api_key_cache = Some(api_key.clone());
+    inner.settings.doubao_api_key_file = api_key;
+    let settings = inner.settings.clone();
+    drop(inner);
+    save_settings_to_disk(&app, &settings)
 }
 
 #[tauri::command]
 fn has_doubao_api_key(state: State<SharedState>) -> Result<bool, String> {
-    if state
-        .inner
-        .lock()
-        .map_err(|_| "state lock poisoned")?
-        .doubao_api_key_cache
-        .as_deref()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
+    let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+    if inner.doubao_api_key_cache.as_deref().is_some_and(|v| !v.trim().is_empty()) {
         return Ok(true);
     }
-    match Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
-        .map_err(|err| format!("keyring unavailable: {err}"))?
-        .get_password()
-    {
-        Ok(value) => Ok(!value.trim().is_empty()),
-        Err(_) => Ok(false),
-    }
+    Ok(!inner.settings.doubao_api_key_file.trim().is_empty())
 }
 
 #[tauri::command]
@@ -620,21 +735,23 @@ fn test_log_event(app: AppHandle) -> Result<(), String> {
 fn connect_device(
     app: AppHandle,
     state: State<SharedState>,
-    port_name: Option<String>,
+    _port_name: Option<String>,
 ) -> Result<(), String> {
+    connect_device_inner(app, state.inner().clone())
+}
+
+fn connect_device_inner(app: AppHandle, state: SharedState) -> Result<(), String> {
     let settings = state
         .inner
         .lock()
         .map_err(|_| "state lock poisoned")?
         .settings
         .clone();
-    let selected_port = port_name.filter(|port| !port.is_empty()).or_else(|| {
-        if settings.serial_port.trim().is_empty() {
-            None
-        } else {
-            Some(settings.serial_port.clone())
-        }
-    });
+    let selected_port = if settings.serial_port.trim().is_empty() {
+        None
+    } else {
+        Some(settings.serial_port.clone())
+    };
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         if let Some(mut existing) = inner.transport.take() {
@@ -685,7 +802,7 @@ fn connect_device(
         inner.last_error.clear();
     }
 
-    let shared = state.inner().clone();
+    let shared = state.clone();
     {
         // USB CDC is physically trusted (no auth). BLE must authenticate with the
         // shared token from pairing.
@@ -930,6 +1047,7 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
             return Err("transcription is already running".to_string());
         }
     }
+    let target_bundle_id = frontmost_bundle_id();
 
     let settings = state
         .inner
@@ -937,21 +1055,20 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
         .map_err(|_| "state lock poisoned")?
         .settings
         .clone();
-    let api_key = match Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
-        .map_err(|err| format!("keyring unavailable: {err}"))?
-        .get_password()
-    {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => state
-            .inner
-            .lock()
-            .map_err(|_| "state lock poisoned")?
-            .doubao_api_key_cache
-            .clone()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or("Doubao X-Api-Key missing. Paste it into the Voice page and click Start.")?,
-    };
-    let (stop_tx, stop_rx) = mpsc::channel();
+    let api_key = state
+        .inner
+        .lock()
+        .ok()
+        .and_then(|inner| {
+            inner.doubao_api_key_cache.clone()
+                .filter(|v| !v.trim().is_empty())
+                .or_else(|| {
+                    let v = inner.settings.doubao_api_key_file.clone();
+                    if v.trim().is_empty() { None } else { Some(v) }
+                })
+        })
+        .ok_or("Doubao X-Api-Key missing. Paste it into the Voice page and click Start.")?;
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel();
     let thread_app = app.clone();
     let thread_state = state.clone();
@@ -972,21 +1089,34 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
 
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner.recording = Some(RecordingHandle { stop_tx, done_rx });
+        inner.recording = Some(RecordingHandle {
+            stop_tx,
+            done_rx,
+            target_bundle_id,
+        });
         inner.last_error.clear();
         inner.last_partial.clear();
     }
     write_voice_state(state, "recording");
+    // Sound + overlay for all recording paths (board button or global shortcut).
+    // Emit this only after validation has succeeded and recording state exists.
+    hide_main_window_inner(&app);
+    play_sound("Tink");
+    let _ = app.emit("voice-recording-start", ());
     log(&app, "recording started");
     Ok(())
 }
 
 #[tauri::command]
 fn stop_recording_and_transcribe(app: AppHandle, state: State<SharedState>) -> Result<(), String> {
-    stop_recording_and_transcribe_inner(app, state.inner())
+    stop_recording_and_transcribe_inner(app, state.inner(), false)
 }
 
-fn stop_recording_and_transcribe_inner(app: AppHandle, state: &SharedState) -> Result<(), String> {
+fn stop_recording_and_transcribe_inner(
+    app: AppHandle,
+    state: &SharedState,
+    submit_after_paste: bool,
+) -> Result<(), String> {
     let recording = {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         let Some(recording) = inner.recording.take() else {
@@ -996,39 +1126,76 @@ fn stop_recording_and_transcribe_inner(app: AppHandle, state: &SharedState) -> R
         recording
     };
 
+    // Send the stop signal to the recording thread. It will send the final
+    // audio frame, wait for the server response, paste if configured, and emit
+    // a voice-event with the result. We do NOT block the UI thread waiting.
     let _ = recording.stop_tx.send(());
+    play_sound("Pop");
     write_voice_state(state, "transcribing");
-    let transcript = match recording.done_rx.recv_timeout(STOP_WAIT_TIMEOUT) {
-        Ok(result) => result?,
-        Err(_) => {
-            if let Ok(mut inner) = state.inner.lock() {
-                inner.busy = false;
-                inner.last_error = "Timed out while stopping transcription. The recording was stopped locally; try Start again.".to_string();
+
+    let state_clone = state.clone();
+    let app_clone = app.clone();
+    thread::spawn(move || {
+        let transcript = match recording.done_rx.recv_timeout(STOP_WAIT_TIMEOUT) {
+            Ok(result) => result,
+            Err(_) => {
+                Err("Timed out while stopping transcription.".to_string())
             }
-            write_voice_state(state, "idle");
-            return Err("Timed out while stopping transcription. The recording was stopped locally; try Start again.".to_string());
+        };
+        match transcript {
+            Ok(text) => {
+                // Close the overlay FIRST so focus returns to the user's app,
+                // then paste into it.
+                let _ = app_clone.emit("voice-recording-stop", ());
+                close_voice_overlay(&app_clone);
+                thread::sleep(Duration::from_millis(120));
+                if let Some(bundle_id) = recording.target_bundle_id.as_deref() {
+                    activate_app(bundle_id);
+                    thread::sleep(Duration::from_millis(180));
+                }
+
+                let paste = state_clone
+                    .inner
+                    .lock()
+                    .map(|inner| inner.settings.paste_after_transcribe)
+                    .unwrap_or(false);
+                if paste && !text.trim().is_empty() {
+                    let _ = paste_text(&text);
+                    if submit_after_paste {
+                        thread::sleep(Duration::from_millis(80));
+                        let _ = press_return_key();
+                    }
+                }
+                {
+                    if let Ok(mut inner) = state_clone.inner.lock() {
+                        inner.busy = false;
+                        inner.last_transcript = text.clone();
+                        inner.last_partial.clear();
+                        inner.last_error.clear();
+                    }
+                }
+                emit_voice(&app_clone, "final", &text);
+                write_voice_state(&state_clone, "idle");
+            }
+            Err(err) => {
+                if let Ok(mut inner) = state_clone.inner.lock() {
+                    inner.busy = false;
+                    inner.last_error = err.clone();
+                }
+                emit_voice(&app_clone, "error", &err);
+                log(&app_clone, format!("voice error: {err}"));
+                write_voice_state(&state_clone, "idle");
+            }
         }
-    };
-    let paste = state
-        .inner
-        .lock()
-        .map_err(|_| "state lock poisoned")?
-        .settings
-        .paste_after_transcribe;
-    if paste && !transcript.trim().is_empty() {
-        paste_text(&transcript)?;
-    }
-    {
-        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-        inner.busy = false;
-        inner.last_transcript = transcript.clone();
-        inner.last_partial.clear();
-        inner.last_error.clear();
-    }
-    write_voice_state(state, "idle");
-    emit_voice(&app, "final", &transcript);
-    log(&app, "transcription complete");
+    });
     Ok(())
+}
+
+fn close_voice_overlay(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("voice-overlay") {
+        let _ = win.close();
+        let _ = win.destroy();
+    }
 }
 
 #[tauri::command]
@@ -1044,10 +1211,13 @@ fn cancel_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Str
     };
     if let Some(recording) = recording {
         let _ = recording.stop_tx.send(());
-        let _ = recording.done_rx.recv_timeout(Duration::from_secs(2));
+        // Don't block waiting — just drop the handle; the thread will exit.
+        play_sound("Basso");
         log(&app, "recording canceled");
     }
     write_voice_state(state, "idle");
+    let _ = app.emit("voice-recording-stop", ());
+    close_voice_overlay(&app);
     Ok(())
 }
 
@@ -1055,7 +1225,7 @@ async fn stream_doubao_asr(
     app: AppHandle,
     settings: Settings,
     api_key: String,
-    stop_rx: Receiver<()>,
+    stop_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> Result<String, String> {
     if settings.doubao_endpoint.trim().is_empty() {
         return Err("Doubao endpoint is not configured".to_string());
@@ -1138,19 +1308,14 @@ async fn stream_doubao_asr(
 
     let mut final_text = String::new();
     let mut sequence: i32 = 2;
-    // Doubao expects each audio packet to be ~100-200ms. cpal delivers far
-    // smaller buffers (~10ms on macOS), and sending packets that small/frequent
-    // makes the service stop returning results — which previously surfaced as a
-    // missing transcript plus a Stop timeout. Accumulate to ~200ms before
-    // sending each frame.
     const SAMPLES_PER_PACKET: usize = 16_000 / 1000 * 200; // 200ms @ 16kHz mono
     let mut pending: Vec<i16> = Vec::with_capacity(SAMPLES_PER_PACKET);
-    // After Stop we flush the tail + final (negative) packet, then keep reading
-    // briefly so the server can emit the last (definite) transcript.
     let mut final_deadline: Option<tokio::time::Instant> = None;
+    let mut stop_rx = stop_rx;
+    let mut stopped = false;
     loop {
         tokio::select! {
-            maybe_samples = audio_rx.recv(), if final_deadline.is_none() => {
+            maybe_samples = audio_rx.recv(), if !stopped => {
                 if let Some(samples) = maybe_samples {
                     pending.extend_from_slice(&samples);
                     while pending.len() >= SAMPLES_PER_PACKET {
@@ -1171,13 +1336,12 @@ async fn stream_doubao_asr(
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(25)), if final_deadline.is_none() => {
-                if stop_rx.try_recv().is_ok() {
-                    let remainder = std::mem::take(&mut pending);
-                    let bytes = pcm16_to_le_bytes(&remainder);
-                    let _ = send_ws_binary(&mut sink, build_audio_frame(-sequence, true, &bytes), "send final audio").await;
-                    final_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(1500));
-                }
+            _ = &mut stop_rx, if !stopped => {
+                stopped = true;
+                let remainder = std::mem::take(&mut pending);
+                let bytes = pcm16_to_le_bytes(&remainder);
+                let _ = send_ws_binary(&mut sink, build_audio_frame(-sequence, true, &bytes), "send final audio").await;
+                final_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(3000));
             }
             _ = async { tokio::time::sleep_until(final_deadline.unwrap()).await }, if final_deadline.is_some() => {
                 break;
@@ -1450,36 +1614,70 @@ fn paste_text(text: &str) -> Result<(), String> {
 
     #[cfg(target_os = "macos")]
     {
-        Command::new("osascript")
-            .args([
-                "-e",
-                "tell application \"System Events\" to keystroke \"v\" using command down",
-            ])
-            .status()
-            .map_err(|err| format!("paste command failed: {err}"))?;
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "$wshell = New-Object -ComObject wscript.shell; $wshell.SendKeys('^v')",
-            ])
-            .status()
-            .map_err(|err| format!("paste command failed: {err}"))?;
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        Command::new("sh")
-            .args(["-lc", "command -v xdotool >/dev/null && xdotool key ctrl+v"])
-            .status()
-            .map_err(|err| format!("paste command failed: {err}"))?;
+        macos_release_command_key()?;
+        macos_key_event(55, true)?; // kVK_Command
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        macos_tap_key(9)?; // kVK_ANSI_V
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        macos_key_event(55, false)?;
     }
 
     Ok(())
+}
+
+fn press_return_key() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_release_command_key()?;
+        macos_tap_key(36)?; // kVK_Return
+    }
+    Ok(())
+}
+
+fn press_backspace_key() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_release_command_key()?;
+        macos_tap_key(51)?; // kVK_Delete (Backspace)
+    }
+    Ok(())
+}
+
+fn press_command_right_bracket_key() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_release_command_key()?;
+        macos_key_event(55, true)?; // kVK_Command
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        macos_tap_key(30)?; // kVK_ANSI_RightBracket
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        macos_key_event(55, false)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_key_event(keycode: u16, down: bool) -> Result<(), String> {
+    let source = core_graphics::event_source::CGEventSource::new(
+        core_graphics::event_source::CGEventSourceStateID::HIDSystemState,
+    )
+    .map_err(|_| "CGEventSource creation failed".to_string())?;
+    let event = core_graphics::event::CGEvent::new_keyboard_event(source, keycode, down)
+        .map_err(|_| "CGEvent keyboard event creation failed".to_string())?;
+    event.post(core_graphics::event::CGEventTapLocation::HID);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn macos_tap_key(keycode: u16) -> Result<(), String> {
+    macos_key_event(keycode, true)?;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    macos_key_event(keycode, false)
+}
+
+#[cfg(target_os = "macos")]
+fn macos_release_command_key() -> Result<(), String> {
+    macos_key_event(55, false) // kVK_Command
 }
 
 fn spawn_hook_server(app: AppHandle, state: SharedState) {
@@ -1617,6 +1815,27 @@ pub fn run() {
                 });
             }
 
+            // Auto-connect: if already paired, connect to the board on startup
+            // so the user never has to manually click Connect.
+            let auto_app = app.handle().clone();
+            thread::spawn(move || {
+                // Brief delay to let BLE stack settle after boot.
+                thread::sleep(Duration::from_secs(2));
+                let Some(state) = auto_app.try_state::<SharedState>() else { return; };
+                let should_connect = state
+                    .inner
+                    .lock()
+                    .map(|inner| {
+                        inner.transport.is_none()
+                            && !inner.settings.paired_board_id.trim().is_empty()
+                    })
+                    .unwrap_or(false);
+                if should_connect {
+                    let shared: SharedState = state.inner().clone();
+                    let _ = connect_device_inner(auto_app, shared);
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1642,6 +1861,7 @@ pub fn run() {
             start_recording,
             stop_recording_and_transcribe,
             cancel_recording,
+            hide_main_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kiro Keyboard Companion");
@@ -1652,7 +1872,7 @@ mod tests {
     use super::*;
 
     fn test_state_with_recording(done_rx: Receiver<Result<String, String>>) -> SharedState {
-        let (stop_tx, _stop_rx) = mpsc::channel();
+        let (stop_tx, _stop_rx) = tokio::sync::oneshot::channel::<()>();
         Arc::new(AppState {
                 inner: Mutex::new(AppStateInner {
                     settings: Settings::default(),
@@ -1663,7 +1883,11 @@ mod tests {
                     endpoint: String::new(),
                     device_name: String::new(),
                     connection_id: 0,
-                    recording: Some(RecordingHandle { stop_tx, done_rx }),
+                    recording: Some(RecordingHandle {
+                        stop_tx,
+                        done_rx,
+                        target_bundle_id: None,
+                    }),
                     busy: true,
                     authenticated: false,
                     pairing_code: String::new(),
