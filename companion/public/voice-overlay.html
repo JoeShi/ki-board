@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; overflow: hidden; height: 100%; }
+    .overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      padding: 16px;
+    }
+    .bubble {
+      background: rgba(15, 17, 22, 0.92);
+      border: 1px solid #07c2d6;
+      border-radius: 12px;
+      padding: 14px 20px;
+      max-width: 600px; width: 100%;
+      color: #fff; font: 15px/1.5 -apple-system, sans-serif;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      position: relative;
+    }
+    .close-btn {
+      position: absolute; top: 8px; right: 12px;
+      background: none; border: none; color: #666; font-size: 16px;
+      cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    }
+    .close-btn:hover { color: #fff; background: #333; }
+    .status { color: #07c2d6; font-size: 12px; margin-bottom: 4px; }
+    .text { min-height: 24px; word-break: break-word; }
+    .text.empty { color: #666; font-style: italic; }
+  </style>
+</head>
+<body>
+  <div class="overlay">
+    <div class="bubble">
+      <button class="close-btn" id="closeBtn">✕</button>
+      <div class="status" id="status">● Listening...</div>
+      <div class="text empty" id="text">Speak now...</div>
+    </div>
+  </div>
+  <script type="module" src="/src/voice-overlay.ts"></script>
+</body>
+</html>

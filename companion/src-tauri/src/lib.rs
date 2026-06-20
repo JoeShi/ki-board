@@ -1416,6 +1416,7 @@ pub fn run() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let settings = load_settings(app.handle());
             let state = Arc::new(AppState {
@@ -1440,6 +1441,56 @@ pub fn run() {
             });
             spawn_hook_server(app.handle().clone(), state.clone());
             app.manage(state);
+
+            // Tray icon — app lives in the menu bar, not the Dock.
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::menu::{Menu, MenuItem};
+
+            let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().unwrap())
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id.as_ref() {
+                        "show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "quit" => std::process::exit(0),
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        let app = tray.app_handle();
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            // Hide from Dock (accessory app).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // Closing the main window hides it instead of quitting (tray app).
+            if let Some(win) = app.get_webview_window("main") {
+                let w = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

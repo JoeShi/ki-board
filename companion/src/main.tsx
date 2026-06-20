@@ -1,8 +1,62 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./styles.css";
+
+// ─── Global voice dictation shortcut (module-level, outside React) ──────────
+let _voiceRecording = false;
+
+async function _openVoiceOverlay() {
+  const existing = await WebviewWindow.getByLabel("voice-overlay");
+  if (existing) return;
+  new WebviewWindow("voice-overlay", {
+    url: "voice-overlay.html",
+    title: "",
+    width: 500,
+    height: 100,
+    decorations: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    center: true,
+    skipTaskbar: true,
+  });
+}
+
+async function _closeVoiceOverlay() {
+  const win = await WebviewWindow.getByLabel("voice-overlay");
+  if (win) { try { await win.destroy(); } catch {} }
+}
+
+async function _handleVoiceToggle() {
+  if (!_voiceRecording) {
+    _voiceRecording = true;
+    await _openVoiceOverlay();
+    await invoke("start_recording").catch(() => { _voiceRecording = false; });
+  } else {
+    _voiceRecording = false;
+    await invoke("stop_recording_and_transcribe").catch(() => {});
+    setTimeout(() => _closeVoiceOverlay(), 1500);
+  }
+}
+
+async function _handleVoiceCancel() {
+  if (!_voiceRecording) return;
+  _voiceRecording = false;
+  await invoke("cancel_recording").catch(() => {});
+  await _closeVoiceOverlay();
+}
+
+register("CommandOrControl+Shift+Space", (e) => {
+  if (e.state === "Pressed") _handleVoiceToggle();
+}).catch((err) => console.error("shortcut failed:", err));
+
+register("CommandOrControl+Shift+.", (e) => {
+  if (e.state === "Pressed") _handleVoiceCancel();
+}).catch((err) => console.error("shortcut failed:", err));
 
 type Settings = {
   connection_mode: string;
@@ -205,6 +259,8 @@ function App() {
       unlistenPair.then((unlisten) => unlisten());
     };
   }, []);
+
+
 
   async function saveSettings() {
     setUiError("");

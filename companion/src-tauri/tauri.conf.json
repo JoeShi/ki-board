@@ -10,12 +10,14 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "Kiro Keyboard Companion",
         "width": 980,
         "height": 760,
-        "resizable": true
+        "resizable": true,
+        "visible": false
       }
     ],
     "security": {
