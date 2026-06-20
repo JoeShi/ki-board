@@ -41,6 +41,13 @@ pub fn set_hid_output_payload(mode: &str) -> Value {
     serde_json::json!({"type":"set_hid_output","mode": mode})
 }
 
+/// Tell the board which voice engine is active. In "system" mode the board
+/// drives macOS dictation itself (HID Control double-tap); in "doubao" mode the
+/// companion records and the board must not emit the dictation HID.
+pub fn voice_engine_payload(engine: &str) -> Value {
+    serde_json::json!({"type":"voice_engine","engine": engine})
+}
+
 pub fn legacy_ping_payload() -> Value {
     serde_json::json!({"type":"companion_ping"})
 }

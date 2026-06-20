@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 arboard = "3"
 btleplug = "0.11"
 cpal = "0.15"
+flate2 = "1"
 futures-util = "0.3"
 hound = "3"
 keyring = "3"
@@ -38,3 +39,7 @@ env_logger = "0.11"
 [[example]]
 name = "ble_probe"
 path = "examples/ble_probe.rs"
+
+[[example]]
+name = "asr_probe"
+path = "examples/asr_probe.rs"
