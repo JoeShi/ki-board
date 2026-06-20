@@ -10,6 +10,11 @@
 // does not flap the companion between online/offline between heartbeats.
 static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
 static unsigned long s_companionLastSeenMs = 0;
+// Voice engine selected by the companion. When false (default) the board owns
+// dictation and emits the macOS Control double-tap on the middle key. When the
+// companion switches to Doubao ASR it records itself, so the board must NOT emit
+// the dictation HID.
+static bool s_voiceEngineDoubao = false;
 static constexpr const char* KEYMAP_NAMESPACE = "kirokb";
 static constexpr const char* KEYMAP_KEY = "companion_keymap";
 static constexpr const char* DEFAULT_KEYMAP_JSON =
@@ -55,6 +60,10 @@ void companionMarkSeen() {
 bool companionIsOnline() {
   return s_companionLastSeenMs != 0 &&
          millis() - s_companionLastSeenMs < COMPANION_ONLINE_GRACE_MS;
+}
+
+bool voiceEngineIsDoubao() {
+  return s_voiceEngineDoubao;
 }
 
 static uint8_t findAgentSlotByName(const AgentSlot* slots, const char* name) {
@@ -234,6 +243,14 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
     response["mode"] = (hidGetOutputMode() == HID_OUTPUT_BLE) ? "ble" : "usb";
     serializeJson(response, output);
     output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "voice_engine") == 0) {
+    const char* engine = doc["engine"] | "system";
+    s_voiceEngineDoubao = (strcmp(engine, "doubao") == 0);
+    Serial.printf("[VOICE] engine -> %s\n", s_voiceEngineDoubao ? "doubao" : "system");
     companionMarkSeen();
     return false;
   }

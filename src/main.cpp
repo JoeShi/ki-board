@@ -168,13 +168,24 @@ static void switchAgent() {
 static void startVoiceInput() {
   voiceRecording = true;
   voiceEditing = false;
-  sendDoubleControl();
-  Serial.printf("[VOICE] Agent %d recording\n", selectedAgent + 1);
+  // System engine: drive macOS dictation with the Control double-tap. Doubao
+  // engine: the companion records via the button_event, so we must not emit the
+  // dictation HID (otherwise both system dictation and Doubao fire at once).
+  if (!voiceEngineIsDoubao()) {
+    sendDoubleControl();
+  }
+  Serial.printf("[VOICE] Agent %d recording (%s)\n",
+                selectedAgent + 1,
+                voiceEngineIsDoubao() ? "doubao" : "system");
   refreshUi();
 }
 
 static void sendVoiceInput() {
-  hidTap(KEY_RETURN);
+  // System engine submits the dictated text with Return. Doubao engine: the
+  // companion pastes the transcript and leaves submission to the user.
+  if (!voiceEngineIsDoubao()) {
+    hidTap(KEY_RETURN);
+  }
   voiceRecording = false;
   voiceEditing = false;
   if (agentSlots[selectedAgent].occupied) {

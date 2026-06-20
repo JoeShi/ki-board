@@ -25,12 +25,18 @@ use transport::usb_serial::{discover_flash_port, UsbSerialTransport};
 use transport::{BleDeviceInfo, BoardTransport, TransportKind};
 use uuid::Uuid;
 
+use flate2::read::GzDecoder;
+
 const KEYRING_SERVICE: &str = "kiro-keyboard-companion";
 const KEYRING_DOUBAO_API_KEY: &str = "doubao-api-key";
 const KEYRING_BLE_TOKEN: &str = "ble-pairing-token";
 const HOOK_ADDR: &str = "127.0.0.1:47218";
-const DEFAULT_DOUBAO_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
-const DEFAULT_DOUBAO_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
+// Two-way streaming, optimized variant (bigmodel_async). It only emits a new
+// packet when the recognition result changes, with lower first/last-word
+// latency. Verified end-to-end against the live service via the asr_probe.
+const DEFAULT_DOUBAO_ENDPOINT: &str =
+    "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
+const DEFAULT_DOUBAO_RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -49,6 +55,13 @@ struct Settings {
     doubao_resource_id: String,
     doubao_language: String,
     paste_after_transcribe: bool,
+    // Preferred audio input device name (empty = system default).
+    #[serde(default)]
+    audio_input_device: String,
+    // Voice engine: "doubao" routes the middle key through companion Doubao ASR;
+    // "system" leaves recognition to the OS (board sends the HID Control double-tap).
+    #[serde(default = "default_voice_engine")]
+    voice_engine: String,
 }
 
 impl Default for Settings {
@@ -63,12 +76,18 @@ impl Default for Settings {
             doubao_resource_id: DEFAULT_DOUBAO_RESOURCE_ID.to_string(),
             doubao_language: String::new(),
             paste_after_transcribe: true,
+            audio_input_device: String::new(),
+            voice_engine: default_voice_engine(),
         }
     }
 }
 
 fn default_connection_mode() -> String {
     "auto".to_string()
+}
+
+fn default_voice_engine() -> String {
+    "doubao".to_string()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -403,6 +422,18 @@ fn handle_button_event(
 ) -> Result<(), String> {
     match (event.key.as_str(), event.action.as_str()) {
         ("middle", "short") => {
+            let engine = state
+                .inner
+                .lock()
+                .map_err(|_| "state lock poisoned")?
+                .settings
+                .voice_engine
+                .clone();
+            if engine == "system" {
+                // System dictation is driven entirely on the board via the HID
+                // Control double-tap; the companion stays out of the way.
+                return Ok(());
+            }
             let recording = state
                 .inner
                 .lock()
@@ -462,11 +493,14 @@ fn save_settings(
     settings: Settings,
 ) -> Result<(), String> {
     save_settings_to_disk(&app, &settings)?;
+    let engine = settings.voice_engine.clone();
     state
         .inner
         .lock()
         .map_err(|_| "state lock poisoned")?
         .settings = settings;
+    // Best-effort: keep the board's voice-engine mode in sync (no-op if offline).
+    let _ = write_board_json_from_arc(state.inner(), &protocol::voice_engine_payload(&engine));
     Ok(())
 }
 
@@ -531,6 +565,23 @@ fn get_status(state: State<SharedState>) -> Result<CompanionStatus, String> {
 #[tauri::command]
 fn list_serial_ports() -> Result<Vec<transport::usb_serial::SerialPortInfo>, String> {
     transport::usb_serial::list_serial_ports()
+}
+
+#[tauri::command]
+fn list_audio_input_devices() -> Result<Vec<String>, String> {
+    let host = cpal::default_host();
+    let devices = host
+        .input_devices()
+        .map_err(|err| format!("enumerate input devices failed: {err}"))?;
+    let mut names = Vec::new();
+    for device in devices {
+        if let Ok(name) = device.name() {
+            if !name.trim().is_empty() && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    Ok(names)
 }
 
 #[tauri::command]
@@ -648,6 +699,13 @@ fn connect_device(
             let _ = write_board_json_from_arc(&shared, &protocol::auth_payload(&token));
         }
     }
+    // Sync the active voice engine so the board knows whether to emit the
+    // system-dictation HID (Control double-tap) on the middle key.
+    let engine = {
+        let inner = shared.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.settings.voice_engine.clone()
+    };
+    let _ = write_board_json_from_arc(&shared, &protocol::voice_engine_payload(&engine));
     spawn_board_reader(app.clone(), shared.clone(), line_rx, connection_id);
     spawn_companion_ping(shared);
     log(&app, format!("connected via {:?}: {endpoint}", kind));
@@ -1040,7 +1098,7 @@ async fn stream_doubao_asr(
     let (mut sink, mut stream) = ws.split();
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
-    let audio_stream = start_audio_stream(audio_tx)?;
+    let audio_stream = start_audio_stream(audio_tx, &settings.audio_input_device)?;
     audio_stream
         .play()
         .map_err(|err| format!("start audio stream failed: {err}"))?;
@@ -1069,24 +1127,38 @@ async fn stream_doubao_asr(
         full_request["audio"]["language"] = serde_json::Value::String(settings.doubao_language);
     }
     let payload = serde_json::to_vec(&full_request).map_err(|err| err.to_string())?;
+    // full client request carries sequence 1 (POS_SEQUENCE). Audio frames then
+    // continue from sequence 2.
     send_ws_binary(
         &mut sink,
-        build_client_frame(0x1, 0x0, Some(&payload)),
+        build_full_request_frame(1, &payload),
         "send full request",
     )
     .await?;
 
     let mut final_text = String::new();
-    // The server auto-assigns sequence 1 to the full client request.
-    // Audio-only request frames must therefore start at sequence 2.
     let mut sequence: i32 = 2;
+    // Doubao expects each audio packet to be ~100-200ms. cpal delivers far
+    // smaller buffers (~10ms on macOS), and sending packets that small/frequent
+    // makes the service stop returning results — which previously surfaced as a
+    // missing transcript plus a Stop timeout. Accumulate to ~200ms before
+    // sending each frame.
+    const SAMPLES_PER_PACKET: usize = 16_000 / 1000 * 200; // 200ms @ 16kHz mono
+    let mut pending: Vec<i16> = Vec::with_capacity(SAMPLES_PER_PACKET);
+    // After Stop we flush the tail + final (negative) packet, then keep reading
+    // briefly so the server can emit the last (definite) transcript.
+    let mut final_deadline: Option<tokio::time::Instant> = None;
     loop {
         tokio::select! {
-            maybe_samples = audio_rx.recv() => {
+            maybe_samples = audio_rx.recv(), if final_deadline.is_none() => {
                 if let Some(samples) = maybe_samples {
-                    let bytes = pcm16_to_le_bytes(&samples);
-                    send_ws_binary(&mut sink, build_audio_frame(sequence, false, &bytes), "send audio").await?;
-                    sequence += 1;
+                    pending.extend_from_slice(&samples);
+                    while pending.len() >= SAMPLES_PER_PACKET {
+                        let chunk: Vec<i16> = pending.drain(..SAMPLES_PER_PACKET).collect();
+                        let bytes = pcm16_to_le_bytes(&chunk);
+                        send_ws_binary(&mut sink, build_audio_frame(sequence, false, &bytes), "send audio").await?;
+                        sequence += 1;
+                    }
                 }
             }
             maybe_msg = stream.next() => {
@@ -1099,11 +1171,16 @@ async fn stream_doubao_asr(
                     }
                 }
             }
-            _ = tokio::time::sleep(Duration::from_millis(25)) => {
+            _ = tokio::time::sleep(Duration::from_millis(25)), if final_deadline.is_none() => {
                 if stop_rx.try_recv().is_ok() {
-                    let _ = send_ws_binary(&mut sink, build_audio_frame(-sequence, true, &[]), "send final audio").await;
-                    break;
+                    let remainder = std::mem::take(&mut pending);
+                    let bytes = pcm16_to_le_bytes(&remainder);
+                    let _ = send_ws_binary(&mut sink, build_audio_frame(-sequence, true, &bytes), "send final audio").await;
+                    final_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(1500));
                 }
+            }
+            _ = async { tokio::time::sleep_until(final_deadline.unwrap()).await }, if final_deadline.is_some() => {
+                break;
             }
         }
     }
@@ -1123,13 +1200,28 @@ where
         .map_err(|err| format!("{label} failed: {err}"))
 }
 
+/// Pick the cpal input device matching `name`, falling back to the system
+/// default when the name is empty or no longer present.
+fn select_input_device(host: &cpal::Host, name: &str) -> Result<cpal::Device, String> {
+    if !name.trim().is_empty() {
+        if let Ok(devices) = host.input_devices() {
+            for device in devices {
+                if device.name().map(|n| n == name).unwrap_or(false) {
+                    return Ok(device);
+                }
+            }
+        }
+    }
+    host.default_input_device()
+        .ok_or_else(|| "no input device available".to_string())
+}
+
 fn start_audio_stream(
     audio_tx: tokio::sync::mpsc::UnboundedSender<Vec<i16>>,
+    device_name: &str,
 ) -> Result<cpal::Stream, String> {
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("no default input device")?;
+    let device = select_input_device(&host, device_name)?;
     let supported = device
         .default_input_config()
         .map_err(|err| format!("default input config failed: {err}"))?;
@@ -1210,15 +1302,21 @@ fn convert_i16_to_16k_mono(samples: &[i16], channels: u16, sample_rate: u32) -> 
     out
 }
 
-fn build_client_frame(message_type: u8, flags: u8, payload: Option<&[u8]>) -> Vec<u8> {
-    let payload = payload.unwrap_or(&[]);
-    let mut frame = vec![0x11, (message_type << 4) | flags, 0x10, 0x00];
+/// full client request frame: message type 0x1, POS_SEQUENCE flag (0x1), JSON
+/// serialization (0x1), no compression. Layout: Header | Sequence | PayloadSize
+/// | Payload. Made `pub` so the asr_probe example exercises the real code path.
+pub fn build_full_request_frame(sequence: i32, payload: &[u8]) -> Vec<u8> {
+    // byte0 ver/hsize, byte1 mtype(0x1)/flags(0x1), byte2 serial(JSON 0x1)/compress(0x0)
+    let mut frame = vec![0x11, (0x1 << 4) | 0x1, 0x10, 0x00];
+    frame.extend_from_slice(&sequence.to_be_bytes());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(payload);
     frame
 }
 
-fn build_audio_frame(sequence: i32, final_packet: bool, payload: &[u8]) -> Vec<u8> {
+/// audio only request frame: message type 0x2. Non-final packets use a positive
+/// sequence (flag 0x1); the final packet uses a negative sequence (flag 0x3).
+pub fn build_audio_frame(sequence: i32, final_packet: bool, payload: &[u8]) -> Vec<u8> {
     let flags = if final_packet { 0x3 } else { 0x1 };
     let mut frame = vec![0x11, (0x2 << 4) | flags, 0x00, 0x00];
     frame.extend_from_slice(&sequence.to_be_bytes());
@@ -1227,7 +1325,7 @@ fn build_audio_frame(sequence: i32, final_packet: bool, payload: &[u8]) -> Vec<u
     frame
 }
 
-fn pcm16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
+pub fn pcm16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(samples.len() * 2);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
@@ -1235,12 +1333,35 @@ fn pcm16_to_le_bytes(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
-fn parse_server_frame(bytes: &[u8]) -> Result<Option<String>, String> {
+/// Decompress a payload slice when the header's compression nibble marks it as
+/// gzip; otherwise return it as-is. Defensive: the live service currently
+/// answers uncompressed even when the request is gzipped, but the protocol
+/// allows compressed responses.
+fn decode_payload(raw: &[u8], compression: u8) -> Vec<u8> {
+    if compression == 0x1 {
+        let mut decoder = GzDecoder::new(raw);
+        let mut out = Vec::new();
+        if decoder.read_to_end(&mut out).is_ok() {
+            return out;
+        }
+    }
+    raw.to_vec()
+}
+
+/// Parse a server frame. Returns the transcript text for a full server response,
+/// `None` for frames without usable text (acks, empty results), or an `Err`
+/// carrying the server's code+message for error frames.
+///
+/// Frame layout depends on flags: the full-request ack uses flag 0x0 (no
+/// sequence field), while audio responses use flag 0x1 (4-byte sequence after
+/// the header). `pub` so the asr_probe example tests the real parser.
+pub fn parse_server_frame(bytes: &[u8]) -> Result<Option<String>, String> {
     if bytes.len() < 8 {
         return Ok(None);
     }
     let message_type = bytes[1] >> 4;
     let flags = bytes[1] & 0x0f;
+    let compression = bytes[2] & 0x0f;
     let mut offset = 4usize;
     if flags == 0x1 || flags == 0x3 {
         if bytes.len() < offset + 4 {
@@ -1256,21 +1377,26 @@ fn parse_server_frame(bytes: &[u8]) -> Result<Option<String>, String> {
         offset += 4;
         let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         offset += 4;
-        let message = String::from_utf8_lossy(bytes.get(offset..offset + size).unwrap_or_default());
-        return Err(format!("Doubao error {code}: {message}"));
+        let raw = bytes.get(offset..offset + size).unwrap_or_default();
+        let message = decode_payload(raw, compression);
+        return Err(format!(
+            "Doubao error {code}: {}",
+            String::from_utf8_lossy(&message)
+        ));
     }
     if message_type != 0x9 || bytes.len() < offset + 4 {
         return Ok(None);
     }
     let size = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
     offset += 4;
-    let payload = bytes.get(offset..offset + size).unwrap_or_default();
-    let value = serde_json::from_slice::<serde_json::Value>(payload)
+    let raw = bytes.get(offset..offset + size).unwrap_or_default();
+    let payload = decode_payload(raw, compression);
+    let value = serde_json::from_slice::<serde_json::Value>(&payload)
         .map_err(|err| format!("Doubao response JSON failed: {err}"))?;
     Ok(extract_transcript(&value))
 }
 
-fn extract_transcript(value: &serde_json::Value) -> Option<String> {
+pub fn extract_transcript(value: &serde_json::Value) -> Option<String> {
     if let Some(text) = value
         .get("result")
         .and_then(|v| v.get("text"))
@@ -1503,6 +1629,7 @@ pub fn run() {
             clear_logs,
             list_serial_ports,
             list_ble_devices,
+            list_audio_input_devices,
             test_log_event,
             connect_device,
             disconnect_device,
@@ -1585,6 +1712,70 @@ mod tests {
             parse_server_frame(&frame).unwrap(),
             Some("hello kiro".to_string())
         );
+    }
+
+    #[test]
+    fn parses_audio_response_with_sequence_field() {
+        // Audio responses use flag 0x1 and carry a 4-byte sequence after the
+        // header, before the payload size. This mirrors the live frames the
+        // asr_probe captured.
+        let payload =
+            r#"{"audio_info":{"duration":600},"result":{"text":"你好，世界"}}"#.as_bytes();
+        let mut frame = vec![0x11, 0x91, 0x10, 0x00];
+        frame.extend_from_slice(&5i32.to_be_bytes());
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+
+        assert_eq!(
+            parse_server_frame(&frame).unwrap(),
+            Some("你好，世界".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_gzip_compressed_response() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let payload = br#"{"result":{"text":"compressed"}}"#;
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(payload).unwrap();
+        let compressed = encoder.finish().unwrap();
+        // compression nibble = 0x1 in byte2.
+        let mut frame = vec![0x11, 0x91, 0x11, 0x00];
+        frame.extend_from_slice(&1i32.to_be_bytes());
+        frame.extend_from_slice(&(compressed.len() as u32).to_be_bytes());
+        frame.extend_from_slice(&compressed);
+
+        assert_eq!(
+            parse_server_frame(&frame).unwrap(),
+            Some("compressed".to_string())
+        );
+    }
+
+    #[test]
+    fn propagates_server_error_frame() {
+        let message = b"invalid request";
+        // message type 0xF, flag 0x0 (no sequence), code + size + message.
+        let mut frame = vec![0x11, 0xF0, 0x10, 0x00];
+        frame.extend_from_slice(&45000007u32.to_be_bytes());
+        frame.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        frame.extend_from_slice(message);
+
+        let err = parse_server_frame(&frame).unwrap_err();
+        assert!(err.contains("45000007"), "got: {err}");
+        assert!(err.contains("invalid request"), "got: {err}");
+    }
+
+    #[test]
+    fn full_request_frame_carries_sequence_one_and_json_flags() {
+        let frame = build_full_request_frame(1, &[0x7b, 0x7d]); // "{}"
+        assert_eq!(frame[0], 0x11);
+        // message type 0x1 (full client request) + POS_SEQUENCE flag 0x1.
+        assert_eq!(frame[1], 0x11);
+        // serialization JSON (0x1), no compression.
+        assert_eq!(frame[2], 0x10);
+        assert_eq!(i32::from_be_bytes(frame[4..8].try_into().unwrap()), 1);
+        assert_eq!(u32::from_be_bytes(frame[8..12].try_into().unwrap()), 2);
     }
 
     #[test]

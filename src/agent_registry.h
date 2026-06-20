@@ -28,5 +28,6 @@ bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selected
 bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output);
 bool companionIsOnline();
 void companionMarkSeen();
+bool voiceEngineIsDoubao();
 
 #endif // AGENT_REGISTRY_H

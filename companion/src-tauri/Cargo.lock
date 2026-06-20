@@ -2397,6 +2397,7 @@ dependencies = [
  "core-foundation",
  "cpal",
  "env_logger",
+ "flate2",
  "futures-util",
  "hound",
  "keyring",

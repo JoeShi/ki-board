@@ -67,6 +67,8 @@ type Settings = {
   doubao_resource_id: string;
   doubao_language: string;
   paste_after_transcribe: boolean;
+  audio_input_device: string;
+  voice_engine: string;
 };
 
 type Status = {
@@ -113,10 +115,12 @@ const defaultSettings: Settings = {
   serial_port: "",
   ble_device_id: "",
   flash_port: "",
-  doubao_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
-  doubao_resource_id: "volc.seedasr.sauc.duration",
+  doubao_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+  doubao_resource_id: "volc.bigasr.sauc.duration",
   doubao_language: "",
   paste_after_transcribe: true,
+  audio_input_device: "",
+  voice_engine: "doubao",
 };
 
 const defaultStatus: Status = {
@@ -155,6 +159,7 @@ function App() {
   const [status, setStatus] = useState<Status>(defaultStatus);
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
   const [bleDevices, setBleDevices] = useState<BleDeviceInfo[]>([]);
+  const [audioDevices, setAudioDevices] = useState<string[]>([]);
   const [apiKey, setApiKey] = useState("");
   const [events, setEvents] = useState<string[]>([]);
   const [keys, setKeys] = useState<KeyBinding[]>(fallbackKeys);
@@ -183,6 +188,23 @@ function App() {
   async function refresh() {
     await loadSettings();
     await refreshRuntime();
+    await loadAudioDevices();
+  }
+
+  async function loadAudioDevices() {
+    try {
+      setAudioDevices(await invoke<string[]>("list_audio_input_devices"));
+    } catch {
+      setAudioDevices([]);
+    }
+  }
+
+  // Persist + sync the voice engine immediately (mirrors selectMode) so the
+  // board learns whether to emit the system-dictation HID on the middle key.
+  async function selectVoiceEngine(engine: string) {
+    const next = { ...settings, voice_engine: engine };
+    setSettings(next);
+    await invoke("save_settings", { settings: next });
   }
 
   async function scanBleDevices() {
@@ -587,51 +609,94 @@ function App() {
         )}
 
         {activeView === "voice" && (
-          <Panel title="Doubao Voice">
-            <label>Endpoint</label>
-            <input value={settings.doubao_endpoint} onChange={(event) => setSettings({ ...settings, doubao_endpoint: event.target.value })} />
-            <label>Resource ID</label>
-            <input value={settings.doubao_resource_id} onChange={(event) => setSettings({ ...settings, doubao_resource_id: event.target.value })} />
-            <label>Language override</label>
-            <input
-              value={settings.doubao_language}
-              onChange={(event) => setSettings({ ...settings, doubao_language: event.target.value })}
-              placeholder="Optional, for supported endpoints only"
-            />
+          <Panel title="Voice">
+            <label>Voice engine</label>
+            <div className="chips">
+              <button
+                className={settings.voice_engine !== "doubao" ? "chip active" : "chip"}
+                onClick={() => runAction(() => selectVoiceEngine("system"))}
+              >
+                System (HID)
+              </button>
+              <button
+                className={settings.voice_engine === "doubao" ? "chip active" : "chip"}
+                onClick={() => runAction(() => selectVoiceEngine("doubao"))}
+              >
+                Doubao ASR
+              </button>
+            </div>
             <p className="hint">
-              Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.
+              {settings.voice_engine === "doubao"
+                ? "Companion records the selected mic and streams to Doubao ASR, then pastes the transcript."
+                : "The board triggers macOS dictation via the Control double-tap (HID). The companion does not record in this mode."}
             </p>
-            <label>X-Api-Key</label>
-            <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder="Stored in OS keyring" />
-            <p className={hasApiKey ? "hint good-text" : "hint warn-text"}>
-              {hasApiKey ? "KEY SAVED in secure storage." : "KEY MISSING: paste X-Api-Key here before testing."}
-            </p>
-            <label className="check">
-              <input
-                type="checkbox"
-                checked={settings.paste_after_transcribe}
-                onChange={(event) => setSettings({ ...settings, paste_after_transcribe: event.target.checked })}
-              />
-              Paste final transcript
-            </label>
-            <div className="actions">
-              <button onClick={() => runAction(saveSettings)}>Save Voice</button>
-            </div>
 
-            <div className="test-box">
-              <div className="test-head">
-                <span>TEST INPUT</span>
-                <strong>{status.busy ? "TRANSCRIBING" : status.recording ? "LISTENING" : "READY"}</strong>
-              </div>
-              <div className="transcript-preview">
-                {status.last_partial || status.last_transcript || "Click Start and speak to test Doubao transcription."}
-              </div>
+            {settings.voice_engine === "doubao" ? (
+              <>
+                <label>Audio input device</label>
+                <select
+                  value={settings.audio_input_device}
+                  onChange={(event) => setSettings({ ...settings, audio_input_device: event.target.value })}
+                >
+                  <option value="">System default</option>
+                  {audioDevices.map((device) => (
+                    <option key={device} value={device}>{device}</option>
+                  ))}
+                </select>
+                <div className="actions">
+                  <button className="secondary" onClick={() => runAction(loadAudioDevices)}>Refresh devices</button>
+                </div>
+
+                <label>Endpoint</label>
+                <input value={settings.doubao_endpoint} onChange={(event) => setSettings({ ...settings, doubao_endpoint: event.target.value })} />
+                <label>Resource ID</label>
+                <input value={settings.doubao_resource_id} onChange={(event) => setSettings({ ...settings, doubao_resource_id: event.target.value })} />
+                <label>Language override</label>
+                <input
+                  value={settings.doubao_language}
+                  onChange={(event) => setSettings({ ...settings, doubao_language: event.target.value })}
+                  placeholder="Optional, for supported endpoints only"
+                />
+                <p className="hint">
+                  Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.
+                </p>
+                <label>X-Api-Key</label>
+                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder="Stored in OS keyring" />
+                <p className={hasApiKey ? "hint good-text" : "hint warn-text"}>
+                  {hasApiKey ? "KEY SAVED in secure storage." : "KEY MISSING: paste X-Api-Key here before testing."}
+                </p>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={settings.paste_after_transcribe}
+                    onChange={(event) => setSettings({ ...settings, paste_after_transcribe: event.target.checked })}
+                  />
+                  Paste final transcript
+                </label>
+                <div className="actions">
+                  <button onClick={() => runAction(saveSettings)}>Save Voice</button>
+                </div>
+
+                <div className="test-box">
+                  <div className="test-head">
+                    <span>TEST INPUT</span>
+                    <strong>{status.busy ? "TRANSCRIBING" : status.recording ? "LISTENING" : "READY"}</strong>
+                  </div>
+                  <div className="transcript-preview">
+                    {status.last_partial || status.last_transcript || "Click Start and speak to test Doubao transcription."}
+                  </div>
+                  <div className="actions">
+                    <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>Start</button>
+                    <button disabled={!status.recording || status.busy} onClick={() => runAction(stopRecording)}>Stop</button>
+                    <button className="secondary" disabled={!status.recording} onClick={() => runAction(cancelRecording)}>Cancel</button>
+                  </div>
+                </div>
+              </>
+            ) : (
               <div className="actions">
-                <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>Start</button>
-                <button disabled={!status.recording || status.busy} onClick={() => runAction(stopRecording)}>Stop</button>
-                <button className="secondary" disabled={!status.recording} onClick={() => runAction(cancelRecording)}>Cancel</button>
+                <button onClick={() => runAction(saveSettings)}>Save Voice</button>
               </div>
-            </div>
+            )}
           </Panel>
         )}
 
