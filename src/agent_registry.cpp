@@ -7,6 +7,10 @@
 #include "ota_manager.h"
 #include "pairing.h"
 
+#define _STR(x) #x
+#define STR(x) _STR(x)
+#define FW_VERSION_STR STR(FW_VERSION_MAJOR) "." STR(FW_VERSION_MINOR) "." STR(FW_VERSION_PATCH)
+
 // Must exceed the companion heartbeat interval (5s) with margin so the board
 // does not flap the companion between online/offline between heartbeats.
 static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
@@ -170,7 +174,7 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
     JsonDocument response;
     response["type"] = "hello_ack";
     response["protocol"] = 1;
-    response["fw"] = "0.2.0";
+    response["fw"] = FW_VERSION_STR;
     response["channel"] = (channel == CHANNEL_BLE) ? "ble" : "usb";
     JsonArray capabilities = response["capabilities"].to<JsonArray>();
     capabilities.add("usb_cdc");
