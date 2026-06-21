@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <cstring>
 
+#include "ota_manager.h"
 #include "pairing.h"
 
 // Must exceed the companion heartbeat interval (5s) with margin so the board
@@ -144,6 +145,9 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
     capabilities.add("ble_gatt");
     capabilities.add("keymap");
     capabilities.add("voice_state");
+    capabilities.add("ota");
+    capabilities.add("ota_usb_cdc");
+    capabilities.add("ota_ble_gatt");
     serializeJson(response, output);
     output.println();
     companionMarkSeen();
@@ -161,6 +165,11 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
   }
 
   if (strcmp(type, "companion_ping") == 0) {
+    companionMarkSeen();
+    return false;
+  }
+
+  if (otaHandleCommand(doc, output)) {
     companionMarkSeen();
     return false;
   }

@@ -2375,6 +2375,7 @@ name = "kiro-keyboard-companion"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "btleplug",
  "core-foundation",
  "cpal",
@@ -2386,6 +2387,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serialport",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

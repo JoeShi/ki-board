@@ -273,3 +273,36 @@ void drawPairingRect(Arduino_GFX& rectLcd, const char* code) {
   rectLcd.setCursor(10, rectLcd.height() - 54);
   rectLcd.print("ESC cancel");
 }
+
+void drawOtaRound(Arduino_GFX* g, uint8_t progress) {
+  const uint16_t violet = 0x781F;
+  const uint16_t cyan = 0x07FF;
+  g->fillScreen(0x0000);
+  drawCenteredText(g, "OTA", 28, 3, violet);
+  char pct[8];
+  snprintf(pct, sizeof(pct), "%u%%", progress);
+  drawCenteredText(g, pct, 78, 3, 0xFFFF);
+  g->drawCircle(80, 80, 70, cyan);
+}
+
+void drawOtaRect(Arduino_GFX& rectLcd, const char* phase, uint8_t progress) {
+  const uint16_t violet = 0x781F;
+  const uint16_t cyan = 0x07FF;
+  rectLcd.fillScreen(0x0000);
+  drawCenteredText(&rectLcd, "Firmware Update", 16, 2, violet);
+  rectLcd.setTextSize(2);
+  rectLcd.setTextColor(0xFFFF);
+  rectLcd.setCursor(16, 58);
+  rectLcd.print(phase && phase[0] ? phase : "writing");
+  const int barX = 16;
+  const int barY = 104;
+  const int barW = rectLcd.width() - 32;
+  const int barH = 18;
+  rectLcd.drawRect(barX, barY, barW, barH, cyan);
+  int fillW = ((barW - 4) * progress) / 100;
+  rectLcd.fillRect(barX + 2, barY + 2, fillW, barH - 4, cyan);
+  char pct[8];
+  snprintf(pct, sizeof(pct), "%u%%", progress);
+  drawCenteredText(&rectLcd, pct, 138, 2, 0xFFFF);
+  drawCenteredText(&rectLcd, "Do not disconnect", rectLcd.height() - 24, 1, 0xFFE0);
+}

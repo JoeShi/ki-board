@@ -13,6 +13,7 @@
 #include "ble_gatt_comm.h"
 #include "display_hardware.h"
 #include "hid_actions.h"
+#include "ota_manager.h"
 #include "pairing.h"
 #include "ui_render.h"
 #include "wifi_config.h"
@@ -47,6 +48,8 @@ static uint8_t currentFrame = 0;
 static unsigned long lastFrameMs = 0;
 static unsigned long lastWifiStatusMs = 0;
 static unsigned long lastBleStatusMs = 0;
+static unsigned long lastOtaUiMs = 0;
+static uint8_t lastOtaProgress = 255;
 static bool wifiResetSuppressReleases = false;
 static bool pairingGestureSuppress = false;
 
@@ -67,6 +70,9 @@ static const char* pressActionName(unsigned long heldMs) {
 }
 
 static void emitButtonEvent(LogicalKey key, unsigned long heldMs) {
+  if (otaIsActive()) {
+    return;
+  }
   char line[192];
   snprintf(
     line,
@@ -128,6 +134,16 @@ static AgentState agentStateAt(uint8_t agentIndex) {
 }
 
 static void refreshUi() {
+  if (otaIsActive()) {
+    drawOtaRound(&roundDisplay(), otaProgressPercent());
+    drawOtaRect(rectDisplay(), otaPhase(), otaProgressPercent());
+    for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
+      Arduino_GFX* g = selectLogicalScreen(static_cast<LogicalKey>(i));
+      drawEscIcon(g, "WAIT");
+      deselectScreenKeys();
+    }
+    return;
+  }
   if (pairingPhase() == PAIRING_PAIRING) {
     // Pairing screen: code on the round display, prompt on the rect display,
     // and confirm/cancel hints on the key screens.
@@ -287,6 +303,9 @@ static void removeCurrentAgentSlot() {
 }
 
 static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
+  if (otaIsActive()) {
+    return;
+  }
   if (wifiResetSuppressReleases || pairingGestureSuppress) {
     return;
   }
@@ -351,6 +370,9 @@ static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now
 }
 
 static void pollButtons() {
+  if (otaIsActive()) {
+    return;
+  }
   unsigned long now = millis();
   for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
     LogicalKey key = static_cast<LogicalKey>(i);
@@ -423,7 +445,7 @@ static void pollButtons() {
 }
 
 static void pollWifiStatusUi(unsigned long now) {
-  if (pairingPhase() == PAIRING_PAIRING) {
+  if (pairingPhase() == PAIRING_PAIRING || otaIsActive()) {
     return;
   }
   if (now - lastWifiStatusMs < WIFI_STATUS_INTERVAL_MS) {
@@ -434,7 +456,7 @@ static void pollWifiStatusUi(unsigned long now) {
 }
 
 static void pollBleStatus(unsigned long now) {
-  if (!bleGattCommConnected() || now - lastBleStatusMs < BLE_STATUS_INTERVAL_MS) {
+  if (otaIsActive() || !bleGattCommConnected() || now - lastBleStatusMs < BLE_STATUS_INTERVAL_MS) {
     return;
   }
   lastBleStatusMs = now;
@@ -448,6 +470,19 @@ static void pollBleStatus(unsigned long now) {
     companionIsOnline() ? "true" : "false"
   );
   bleGattCommSendLine(line);
+}
+
+static void pollOtaUi(unsigned long now) {
+  if (!otaIsActive()) {
+    lastOtaProgress = 255;
+    return;
+  }
+  uint8_t progress = otaProgressPercent();
+  if (progress != lastOtaProgress || now - lastOtaUiMs >= 250) {
+    lastOtaProgress = progress;
+    lastOtaUiMs = now;
+    refreshUi();
+  }
 }
 
 void setup() {
@@ -476,7 +511,7 @@ void loop() {
   unsigned long now = millis();
   wifiConfigLoop();
 
-  if (pairingPhase() != PAIRING_PAIRING && now - lastFrameMs >= FRAME_INTERVAL_MS) {
+  if (!otaIsActive() && pairingPhase() != PAIRING_PAIRING && now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
     currentFrame = (currentFrame + 1) % EXPR_FRAME_COUNT;
     drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, false);
@@ -488,6 +523,8 @@ void loop() {
   if (pairingPoll(now)) {
     refreshUi();
   }
+  otaLoop();
+  pollOtaUi(now);
   pollWifiStatusUi(now);
   pollBleStatus(now);
   pollButtons();

@@ -104,6 +104,7 @@ function App() {
   const [keys, setKeys] = useState<KeyBinding[]>(fallbackKeys);
   const [firmwarePath, setFirmwarePath] = useState("");
   const [flashOutput, setFlashOutput] = useState("");
+  const [otaTransportMode, setOtaTransportMode] = useState("current");
   const [activeView, setActiveView] = useState("device");
   const [uiError, setUiError] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -300,6 +301,17 @@ function App() {
     setFlashOutput(output);
   }
 
+  async function otaFlashFirmware() {
+    setUiError("");
+    setFlashOutput("");
+    const output = await invoke<string>("ota_flash_firmware", {
+      firmwarePath,
+      transportMode: otaTransportMode,
+    });
+    setFlashOutput(output);
+    await refreshRuntime();
+  }
+
   async function runAction(action: () => Promise<void>) {
     try {
       await action();
@@ -487,26 +499,56 @@ function App() {
 
         {activeView === "flash" && (
           <Panel title="Firmware Flash">
-            <label>CH340 flash port</label>
-            <select
-              value={settings.flash_port}
-              onChange={(event) => setSettings({ ...settings, flash_port: event.target.value })}
-            >
-              <option value="">Auto-detect CH340</option>
-              {flashPorts.map((port) => (
-                <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
-              ))}
-            </select>
             <label>Firmware .bin path</label>
             <input
               value={firmwarePath}
               onChange={(event) => setFirmwarePath(event.target.value)}
               placeholder="/absolute/path/to/firmware.bin"
             />
-            <div className="actions">
-              <button onClick={() => runAction(flashFirmware)} disabled={!firmwarePath.trim()}>Flash</button>
-              <button className="secondary" onClick={() => runAction(saveSettings)}>Save Port</button>
+
+            <div className="test-box">
+              <div className="test-head">
+                <span>OTA FLASH</span>
+                <strong>{status.device_connected ? status.transport.toUpperCase() : "OFFLINE"}</strong>
+              </div>
+              <label>Transport</label>
+              <select value={otaTransportMode} onChange={(event) => setOtaTransportMode(event.target.value)}>
+                <option value="current">Current connection</option>
+                <option value="usb">USB CDC</option>
+                <option value="ble">BLE GATT</option>
+              </select>
+              <p className="hint">
+                OTA uses the current board protocol. USB is fastest; BLE requires pairing and is slower.
+              </p>
+              <div className="actions">
+                <button onClick={() => runAction(otaFlashFirmware)} disabled={!firmwarePath.trim()}>OTA Flash</button>
+              </div>
             </div>
+
+            <div className="test-box">
+              <div className="test-head">
+                <span>RECOVERY FLASH</span>
+                <strong>CH340</strong>
+              </div>
+              <label>CH340 flash port</label>
+              <select
+                value={settings.flash_port}
+                onChange={(event) => setSettings({ ...settings, flash_port: event.target.value })}
+              >
+                <option value="">Auto-detect CH340</option>
+                {flashPorts.map((port) => (
+                  <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
+                ))}
+              </select>
+              <p className="hint">
+                Use this only for development or recovery when OTA is unavailable.
+              </p>
+              <div className="actions">
+                <button className="secondary" onClick={() => runAction(flashFirmware)} disabled={!firmwarePath.trim()}>CH340 Flash</button>
+                <button className="secondary" onClick={() => runAction(saveSettings)}>Save Port</button>
+              </div>
+            </div>
+
             {flashOutput && <pre className="terminal">{flashOutput}</pre>}
           </Panel>
         )}

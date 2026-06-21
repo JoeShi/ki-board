@@ -162,7 +162,7 @@ void bleGattCommSendLine(const char* line) {
 }
 
 bool bleGattCommConnected() {
-  return s_tx != nullptr;
+  return s_connected;
 }
 
 const char* bleGattCommBoardId() {
