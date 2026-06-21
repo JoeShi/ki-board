@@ -186,8 +186,6 @@ static void drawAgentTile(Arduino_GFX& rectLcd, const AgentSlot* slots,
 void drawRectMetadata(Arduino_GFX& rectLcd, const AgentSlot* slots,
                       uint8_t selectedAgent, bool voiceRecording,
                       bool voiceEditing) {
-  rectLcd.fillScreen(0x0000);
-
   const int margin = 6;
   const int gap = 6;
   const int tileW = (rectLcd.width() - margin * 2 - gap) / 2;
@@ -196,6 +194,12 @@ void drawRectMetadata(Arduino_GFX& rectLcd, const AgentSlot* slots,
   const int rightX = margin + tileW + gap;
   const int topY = margin;
   const int bottomY = margin + tileH + gap;
+
+  // Clear each tile area individually instead of full fillScreen to avoid flicker.
+  rectLcd.fillRect(leftX, topY, tileW, tileH, 0x0000);
+  rectLcd.fillRect(leftX, bottomY, tileW, tileH, 0x0000);
+  rectLcd.fillRect(rightX, topY, tileW, tileH, 0x0000);
+  rectLcd.fillRect(rightX, bottomY, tileW, tileH, 0x0000);
 
   drawAgentTile(rectLcd, slots, selectedAgent, voiceRecording, voiceEditing, 0, leftX, topY, tileW, tileH);
   drawAgentTile(rectLcd, slots, selectedAgent, voiceRecording, voiceEditing, 1, leftX, bottomY, tileW, tileH);
