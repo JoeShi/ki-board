@@ -1,0 +1,134 @@
+{
+  "brand": {
+    "name": "Ki-board",
+    "slogan": "Go Talk"
+  },
+  "sidebar": {
+    "device": "DEVICE",
+    "voice": "VOICE",
+    "flash": "FLASH",
+    "logs": "LOGS",
+    "footer": "Built by Kiro friends",
+    "version": "v{{version}}"
+  },
+  "topbar": {
+    "eyebrow": "USB CDC · BLE GATT · 3P ASR · ESP32-S3",
+    "viewTitle": {
+      "device": "Device Control",
+      "voice": "Voice Console",
+      "flash": "Firmware Flasher",
+      "logs": "Event Stream"
+    }
+  },
+  "status": {
+    "online": "BOARD ONLINE",
+    "offline": "BOARD OFFLINE"
+  },
+  "lcd": {
+    "link": "LINK",
+    "firmware": "FIRMWARE",
+    "voiceStatus": "VOICE STATUS",
+    "voiceMode": "VOICE MODE",
+    "disconnected": "DISCONNECTED",
+    "busy": "BUSY",
+    "rec": "REC",
+    "idle": "IDLE",
+    "system": "System",
+    "asr": "ASR"
+  },
+  "device": {
+    "title": "Device Bridge",
+    "portLabel": "Board USB port",
+    "autoDetect": "Auto-detect ki-board",
+    "hint": "Connects via USB first, falls back to Bluetooth automatically.",
+    "connect": "Connect",
+    "disconnect": "Disconnect",
+    "refresh": "Refresh",
+    "blePairing": "BLE Pairing",
+    "bleAuthorized": "BLE AUTHORIZED for this Mac",
+    "bleNotAuthorized": "BLE NOT AUTHORIZED — pair to allow wireless access.",
+    "pairHint": "On the board, hold the <strong>left + right</strong> keys together for ~3s until a 6-digit code appears. Then click Pair, compare the code, and confirm on the board (● middle key).",
+    "pair": "Pair",
+    "forgetDevice": "Forget device",
+    "pairCodeCompare": "Compare with the board, then press ● on the board:",
+    "pairSuccess": "Paired successfully.",
+    "pairFailed": "Pairing failed: {{reason}}",
+    "pairAuthOk": "Authenticated.",
+    "pairAuthRequired": "Board requires pairing. Put the board in pairing mode and click Pair.",
+    "pairUnpaired": "Device forgotten.",
+    "pairRequesting": "Requesting pairing… confirm on the board.",
+    "pairConnecting": "Connecting…"
+  },
+  "voice": {
+    "title": "Voice",
+    "engineLabel": "Voice engine",
+    "systemHid": "System (HID)",
+    "thirdPartyAsr": "3P ASR",
+    "hintThirdParty": "Companion records the selected mic, sends audio to the selected ASR provider, then pastes the transcript.",
+    "hintSystem": "The board triggers macOS dictation via the Control double-tap (HID). The companion does not record in this mode.",
+    "asrProvider": "ASR provider",
+    "doubaoProvider": "Doubao / Volcengine",
+    "audioInput": "Audio input device",
+    "systemDefault": "System default",
+    "refreshDevices": "Refresh devices",
+    "endpoint": "Endpoint",
+    "resourceId": "Resource ID",
+    "languageOverride": "Language override",
+    "languagePlaceholder": "Optional, for supported endpoints only",
+    "languageHint": "Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.",
+    "apiKeyLabel": "X-Api-Key",
+    "apiKeyPlaceholder": "Stored in OS keyring",
+    "keySaved": "KEY SAVED in secure storage.",
+    "keyMissing": "KEY MISSING: paste X-Api-Key here before testing.",
+    "pasteTranscript": "Paste final transcript",
+    "saveVoice": "Save Voice",
+    "testInput": "TEST INPUT",
+    "transcribing": "TRANSCRIBING",
+    "listening": "LISTENING",
+    "ready": "READY",
+    "testHint": "Click Start and speak to test third-party ASR transcription.",
+    "start": "Start",
+    "stop": "Stop",
+    "cancel": "Cancel"
+  },
+  "flash": {
+    "title": "Firmware Flash",
+    "firmwareLabel": "Firmware .bin file",
+    "selectFile": "Select File…",
+    "noFile": "No file selected",
+    "otaFlash": "OTA FLASH",
+    "offline": "OFFLINE",
+    "otaInProgress": "OTA in progress — do NOT disconnect or perform other operations until complete.",
+    "otaHint": "OTA uses the current board connection. USB is fastest; BLE requires pairing and is slower.",
+    "flashButton": "OTA Flash",
+    "flashing": "Flashing…"
+  },
+  "logs": {
+    "title": "Event Log",
+    "clear": "Clear"
+  },
+  "pairModal": {
+    "title": "Confirm pairing",
+    "question": "Does this code match the one on the board screen?",
+    "matchHint": "If they match, press the <strong>middle (●)</strong> key on the board to confirm, or the <strong>left (◀)</strong> key to cancel.",
+    "close": "Close"
+  },
+  "language": {
+    "label": "LANG",
+    "en": "EN",
+    "zhCN": "中文"
+  },
+  "keys": {
+    "title": "Key Tiles",
+    "keyLabel": "KEY {{num}}",
+    "label": "Label",
+    "action": "Action",
+    "key": "Key",
+    "hotkey": "Hotkey",
+    "voiceAction": "Voice",
+    "nextAgent": "Next Agent",
+    "none": "None",
+    "readBoard": "Read Board",
+    "writeBoard": "Write Board"
+  }
+}

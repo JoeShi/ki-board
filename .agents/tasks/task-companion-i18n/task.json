@@ -1,0 +1,14 @@
+{
+  "task_id": "task-companion-i18n",
+  "task_description": "Add internationalization (i18n) to the Ki-board Companion App with English and Simplified Chinese support. Default language is English. Includes language switcher and localStorage persistence.",
+  "status": "completed",
+  "feature_order": ["FEAT-001"],
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "skipped",
+    "docker_build": "skipped",
+    "summary": "npm run typecheck passes with no errors. npm run frontend:build succeeds (72 modules, 219KB main bundle). No test framework configured for frontend so test_quality is skipped. No Dockerfile for frontend-only build."
+  }
+}

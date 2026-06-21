@@ -1,0 +1,134 @@
+{
+  "brand": {
+    "name": "Ki-board",
+    "slogan": "开口说"
+  },
+  "sidebar": {
+    "device": "设备",
+    "voice": "语音",
+    "flash": "固件",
+    "logs": "日志",
+    "footer": "由 Kiro 伙伴们打造",
+    "version": "v{{version}}"
+  },
+  "topbar": {
+    "eyebrow": "USB CDC · BLE GATT · 3P ASR · ESP32-S3",
+    "viewTitle": {
+      "device": "设备控制",
+      "voice": "语音控制台",
+      "flash": "固件烧录",
+      "logs": "事件流"
+    }
+  },
+  "status": {
+    "online": "设备在线",
+    "offline": "设备离线"
+  },
+  "lcd": {
+    "link": "连接",
+    "firmware": "固件",
+    "voiceStatus": "语音状态",
+    "voiceMode": "语音模式",
+    "disconnected": "未连接",
+    "busy": "忙碌",
+    "rec": "录音中",
+    "idle": "空闲",
+    "system": "系统",
+    "asr": "ASR"
+  },
+  "device": {
+    "title": "设备桥接",
+    "portLabel": "开发板 USB 端口",
+    "autoDetect": "自动检测 ki-board",
+    "hint": "优先通过 USB 连接，自动回退到蓝牙。",
+    "connect": "连接",
+    "disconnect": "断开",
+    "refresh": "刷新",
+    "blePairing": "BLE 配对",
+    "bleAuthorized": "BLE 已授权此 Mac",
+    "bleNotAuthorized": "BLE 未授权 - 请配对以允许无线访问。",
+    "pairHint": "在开发板上，同时按住<strong>左 + 右</strong>键约3秒，直到出现6位数字。然后点击配对，比较代码，并在开发板上确认（● 中间键）。",
+    "pair": "配对",
+    "forgetDevice": "忘记设备",
+    "pairCodeCompare": "与开发板上的代码对比，然后按开发板上的 ●：",
+    "pairSuccess": "配对成功。",
+    "pairFailed": "配对失败：{{reason}}",
+    "pairAuthOk": "已认证。",
+    "pairAuthRequired": "开发板需要配对。将开发板置于配对模式并点击配对。",
+    "pairUnpaired": "设备已忘记。",
+    "pairRequesting": "正在请求配对…请在开发板上确认。",
+    "pairConnecting": "正在连接…"
+  },
+  "voice": {
+    "title": "语音",
+    "engineLabel": "语音引擎",
+    "systemHid": "系统 (HID)",
+    "thirdPartyAsr": "第三方 ASR",
+    "hintThirdParty": "Companion 录制所选麦克风的音频，发送到选定的 ASR 服务商，然后粘贴转录文本。",
+    "hintSystem": "开发板通过 Control 双击（HID）触发 macOS 听写功能。此模式下 Companion 不录音。",
+    "asrProvider": "ASR 服务商",
+    "doubaoProvider": "豆包 / 火山引擎",
+    "audioInput": "音频输入设备",
+    "systemDefault": "系统默认",
+    "refreshDevices": "刷新设备",
+    "endpoint": "端点",
+    "resourceId": "资源 ID",
+    "languageOverride": "语言覆盖",
+    "languagePlaceholder": "可选，仅适用于支持的端点",
+    "languageHint": "默认留空。火山引擎说明此字段取决于端点/模式。",
+    "apiKeyLabel": "X-Api-Key",
+    "apiKeyPlaceholder": "存储在系统钥匙串中",
+    "keySaved": "密钥已保存在安全存储中。",
+    "keyMissing": "密钥缺失：请在测试前粘贴 X-Api-Key。",
+    "pasteTranscript": "粘贴最终转录文本",
+    "saveVoice": "保存语音设置",
+    "testInput": "测试输入",
+    "transcribing": "转录中",
+    "listening": "监听中",
+    "ready": "就绪",
+    "testHint": "点击开始并说话，测试第三方 ASR 转录。",
+    "start": "开始",
+    "stop": "停止",
+    "cancel": "取消"
+  },
+  "flash": {
+    "title": "固件烧录",
+    "firmwareLabel": "固件 .bin 文件",
+    "selectFile": "选择文件…",
+    "noFile": "未选择文件",
+    "otaFlash": "OTA 烧录",
+    "offline": "离线",
+    "otaInProgress": "OTA 进行中 - 请勿断开连接或执行其他操作。",
+    "otaHint": "OTA 使用当前连接。USB 最快；BLE 需要配对且速度较慢。",
+    "flashButton": "OTA 烧录",
+    "flashing": "烧录中…"
+  },
+  "logs": {
+    "title": "事件日志",
+    "clear": "清除"
+  },
+  "pairModal": {
+    "title": "确认配对",
+    "question": "此代码与开发板屏幕上显示的一致吗？",
+    "matchHint": "如果一致，按开发板上的<strong>中间（●）</strong>键确认，或按<strong>左（◀）</strong>键取消。",
+    "close": "关闭"
+  },
+  "language": {
+    "label": "语言",
+    "en": "EN",
+    "zhCN": "中文"
+  },
+  "keys": {
+    "title": "按键设置",
+    "keyLabel": "按键 {{num}}",
+    "label": "标签",
+    "action": "动作",
+    "key": "按键",
+    "hotkey": "快捷键",
+    "voiceAction": "语音",
+    "nextAgent": "下一个 Agent",
+    "none": "无",
+    "readBoard": "读取开发板",
+    "writeBoard": "写入开发板"
+  }
+}

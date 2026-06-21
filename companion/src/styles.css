@@ -144,6 +144,19 @@ label {
   margin: 2px 0;
 }
 
+.lang-switcher {
+  margin-top: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.lang-switcher button {
+  flex: 1;
+  min-height: 36px;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
 .brand {
   display: grid;
   grid-template-columns: 52px 1fr;
