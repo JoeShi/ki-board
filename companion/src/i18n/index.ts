@@ -21,6 +21,7 @@ i18n
       lookupLocalStorage: "i18nextLng",
       caches: ["localStorage"],
     },
+    initAsync: false,
   });
 
 export default i18n;
