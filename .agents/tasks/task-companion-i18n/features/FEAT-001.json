@@ -1,0 +1,31 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Set up the i18n infrastructure with react-i18next, create English and Simplified Chinese translation files, extract all user-facing strings from main.tsx, add a language switcher in the sidebar, persist language preference in localStorage, and default to English.",
+  "status": "in_progress",
+  "steps": [
+    "Run npm install in companion/ to install existing dependencies, then install i18next, react-i18next, and i18next-browser-languagedetector as production dependencies",
+    "Create companion/src/i18n/ directory with the following files: (a) index.ts - i18next initialization config with localStorage persistence and English as default/fallback language, (b) en.json - English translation file with all extracted strings, (c) zh-CN.json - Simplified Chinese translation file with all translated strings",
+    "In the i18n/index.ts initialization: use i18next.init with resources loaded from the JSON files, set fallbackLng to 'en', set lng to localStorage value or 'en', configure the languagedetector plugin to check localStorage first, set interpolation.escapeValue to false (React already escapes)",
+    "Extract ALL user-facing strings from companion/src/main.tsx into translation keys organized by view/section. This includes: sidebar labels (DEVICE, VOICE, FLASH, LOGS), brand text ('Ki-board', 'Go Talk'), topbar text ('USB CDC...', view titles), status text ('BOARD ONLINE'/'BOARD OFFLINE'), LCD labels (LINK, FIRMWARE, VOICE STATUS, VOICE MODE), all button labels (Connect, Disconnect, Refresh, Pair, etc.), all hint/description text, form labels, select options, error messages, pair dialog text, flash panel text, voice panel text, logs panel text, footer text",
+    "In main.tsx: import the i18n config (import './i18n') and import { useTranslation } from 'react-i18next'. In the App component, call const { t } = useTranslation() and replace all hardcoded strings with t('key') calls. For the viewTitle() function and other helpers outside the component, either move them inside or use i18next.t directly",
+    "Add a language switcher UI in the sidebar (between the nav buttons and the footer). It should show the current language and allow toggling between English and Chinese. Use a simple button or select element styled consistently with existing nav buttons. When switched, call i18n.changeLanguage(lng) which automatically persists to localStorage via the detector plugin",
+    "Ensure the tsconfig.json has resolveJsonModule: true (already set) so translation JSON imports work correctly"
+  ],
+  "acceptance_criteria": [
+    "npm run typecheck passes with no errors",
+    "npm run frontend:build succeeds and produces output in dist/",
+    "All visible text in the UI comes from translation files (no hardcoded user-facing strings remain in JSX)",
+    "The app defaults to English when no language preference is stored",
+    "Switching to zh-CN updates all UI text to Simplified Chinese without page reload",
+    "Language preference persists in localStorage and is restored on app reload",
+    "A language switcher control is visible in the sidebar"
+  ],
+  "verification": [
+    "Run: cd /projects/sandbox/ki-board/companion && npm run typecheck",
+    "Run: cd /projects/sandbox/ki-board/companion && npm run frontend:build",
+    "Verify no hardcoded English UI strings remain in main.tsx JSX by checking that all text in JSX uses t() calls"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}
