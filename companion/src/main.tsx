@@ -26,6 +26,7 @@ async function _openVoiceOverlay() {
     center: true,
     skipTaskbar: true,
     focus: false,
+    shadow: false,
   });
   await invoke("hide_main_window").catch(() => {});
 }
