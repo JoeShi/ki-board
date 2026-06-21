@@ -1,4 +1,5 @@
 #include "ota_manager.h"
+#include "wifi_ota.h"
 
 #include <Update.h>
 #include <esp_ota_ops.h>
@@ -85,6 +86,11 @@ static bool handleBegin(const JsonDocument& request, Print& output) {
   const char* requestId = request["request_id"] | "";
   const size_t size = request["size"] | 0;
   const char* sha256 = request["sha256"] | "";
+
+  if (wifiOtaIsActive()) {
+    sendResponse(output, requestId, false, "begin", "wifi_ota_active");
+    return true;
+  }
 
   if (s_active) {
     sendResponse(output, requestId, false, s_phase, "ota_already_active");
