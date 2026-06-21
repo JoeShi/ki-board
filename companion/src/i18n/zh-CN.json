@@ -9,7 +9,7 @@
     "flash": "固件",
     "logs": "日志",
     "footer": "由 Kiro 伙伴们打造",
-    "version": "v0.2.0"
+    "version": "v{{version}}"
   },
   "topbar": {
     "eyebrow": "USB CDC · BLE GATT · 3P ASR · ESP32-S3",

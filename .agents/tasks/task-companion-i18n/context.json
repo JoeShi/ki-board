@@ -1,0 +1,22 @@
+{
+  "project_type": "Tauri v2 + React 19 + Vite 7 + TypeScript desktop application",
+  "language": "TypeScript/React",
+  "build_system": "npm + Vite for frontend, Tauri CLI for full build",
+  "test_framework": "No test framework configured for the frontend",
+  "build_command": "cd /projects/sandbox/ki-board/companion && npm run frontend:build",
+  "test_command": "cd /projects/sandbox/ki-board/companion && npm run typecheck",
+  "verification_instructions": "1. Run npm install to install dependencies. 2. Run npm run typecheck to verify TypeScript compiles. 3. Run npm run frontend:build to verify Vite build succeeds.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "cd /projects/sandbox/ki-board/companion && npm install",
+  "environment_constraints": "Node.js v22.22.3 and npm 11.4.2 are available. No Rust toolchain needed for frontend-only validation. Network appears available for npm install.",
+  "contribution_requirements": "From AGENTS.md: companion frontend changes must pass 'npm run build' (full Tauri build) or at minimum 'npm run frontend:build' (Vite build). From steering: communicate in Chinese, code comments can be in English.",
+  "key_patterns": "All UI code is in a single file src/main.tsx. The app uses functional React components with hooks. State is managed with useState. The app has a sidebar navigation with views: device, voice, flash, logs. There is a Panel component for content sections. No existing i18n infrastructure.",
+  "relevant_files": [
+    "companion/src/main.tsx",
+    "companion/src/styles.css",
+    "companion/package.json",
+    "companion/tsconfig.json",
+    "companion/vite.config.ts"
+  ],
+  "directory_structure": "companion/ - Tauri desktop app root. companion/src/ - Frontend source (main.tsx, styles.css, voice-overlay.ts). companion/src-tauri/ - Rust backend. companion/public/ - Static assets."
+}

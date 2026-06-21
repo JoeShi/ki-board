@@ -5,9 +5,11 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import i18n from "./i18n";
 import "./styles.css";
+
+const APP_VERSION = "0.2.0";
 
 // ─── Global voice dictation shortcut (module-level, outside React) ──────────
 let _voiceRecording = false;
@@ -212,7 +214,7 @@ function App() {
   const [uiError, setUiError] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
   const [pairCode, setPairCode] = useState<string | null>(null);
-  const [pairMessage, setPairMessage] = useState("");
+  const [pairMessage, setPairMessage] = useState<{ key: string; params?: Record<string, string> } | null>(null);
   const [voiceText, setVoiceText] = useState("");
 
   const boardPorts = useMemo(() => ports.filter((port) => port.kind !== "flash-ch340"), [ports]);
@@ -294,28 +296,28 @@ function App() {
         switch (payload.event) {
           case "code":
             setPairCode(payload.code ?? "");
-            setPairMessage("");
+            setPairMessage(null);
             break;
           case "ok":
             setPairCode(null);
-            setPairMessage(i18n.t("device.pairSuccess"));
+            setPairMessage({ key: "device.pairSuccess" });
             refreshRuntime();
             break;
           case "failed":
             setPairCode(null);
-            setPairMessage(i18n.t("device.pairFailed", { reason: payload.reason ?? "unknown" }));
+            setPairMessage({ key: "device.pairFailed", params: { reason: payload.reason ?? "unknown" } });
             break;
           case "auth_ok":
-            setPairMessage(i18n.t("device.pairAuthOk"));
+            setPairMessage({ key: "device.pairAuthOk" });
             refreshRuntime();
             break;
           case "auth_required":
-            setPairMessage(i18n.t("device.pairAuthRequired"));
+            setPairMessage({ key: "device.pairAuthRequired" });
             refreshRuntime();
             break;
           case "unpaired":
             setPairCode(null);
-            setPairMessage(i18n.t("device.pairUnpaired"));
+            setPairMessage({ key: "device.pairUnpaired" });
             refreshRuntime();
             break;
         }
@@ -359,7 +361,7 @@ function App() {
 
   async function startPairing() {
     setUiError("");
-    setPairMessage(i18n.t("device.pairRequesting"));
+    setPairMessage({ key: "device.pairRequesting" });
     await invoke("start_pairing");
   }
 
@@ -369,7 +371,7 @@ function App() {
     setUiError("");
     if (!status.device_connected) {
       await invoke("save_settings", { settings });
-      setPairMessage(i18n.t("device.pairConnecting"));
+      setPairMessage({ key: "device.pairConnecting" });
       await invoke("connect_device", { portName: settings.serial_port || null });
       await refreshRuntime();
     }
@@ -480,13 +482,13 @@ function App() {
         ))}
         <div className="lang-switcher">
           <button
-            className={i18n.language === "en" ? "nav active" : "nav"}
+            className={i18n.resolvedLanguage === "en" ? "nav active" : "nav"}
             onClick={() => i18n.changeLanguage("en")}
           >
             {t("language.en")}
           </button>
           <button
-            className={i18n.language === "zh-CN" ? "nav active" : "nav"}
+            className={i18n.resolvedLanguage === "zh-CN" ? "nav active" : "nav"}
             onClick={() => i18n.changeLanguage("zh-CN")}
           >
             {t("language.zhCN")}
@@ -494,7 +496,7 @@ function App() {
         </div>
         <div className="sidebar-footer">
           <p>{t("sidebar.footer")}</p>
-          <p>{t("sidebar.version")}</p>
+          <p>{t("sidebar.version", { version: APP_VERSION })}</p>
         </div>
       </aside>
 
@@ -557,7 +559,7 @@ function App() {
                 ? t("device.bleAuthorized")
                 : t("device.bleNotAuthorized")}
             </p>
-            <p className="hint" dangerouslySetInnerHTML={{ __html: t("device.pairHint") }} />
+            <p className="hint"><Trans i18nKey="device.pairHint" components={{ strong: <strong /> }} /></p>
             <div className="actions">
               <button onClick={() => runAction(pairFlow)}>{t("device.pair")}</button>
               <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>{t("device.forgetDevice")}</button>
@@ -568,7 +570,7 @@ function App() {
                 <div style={{ fontFamily: "monospace", fontSize: 32, letterSpacing: 6, color: "#fff", marginTop: 4 }}>{status.pairing_code}</div>
               </div>
             )}
-            {pairMessage && <p className="hint">{pairMessage}</p>}
+            {pairMessage && <p className="hint">{t(pairMessage.key, pairMessage.params)}</p>}
           </Panel>
         )}
 
@@ -795,7 +797,7 @@ function App() {
             >
               {pairCode}
             </div>
-            <p style={{ color: "#aab", fontSize: 13 }} dangerouslySetInnerHTML={{ __html: t("pairModal.matchHint") }} />
+            <p style={{ color: "#aab", fontSize: 13 }}><Trans i18nKey="pairModal.matchHint" components={{ strong: <strong /> }} /></p>
             <div className="actions" style={{ justifyContent: "center" }}>
               <button className="secondary" onClick={() => setPairCode(null)}>{t("pairModal.close")}</button>
             </div>
