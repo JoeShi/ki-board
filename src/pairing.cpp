@@ -237,7 +237,9 @@ PairLineAction pairingHandleLine(const char* line, Print& out, PairTransport tra
   // Privileged commands: USB is trusted; BLE requires authentication.
   if (strcmp(type, "agent_state") == 0 || strcmp(type, "get_keymap") == 0 ||
       strcmp(type, "set_keymap") == 0 || strcmp(type, "set_hid_output") == 0 ||
-      strcmp(type, "get_hid_output") == 0) {
+      strcmp(type, "get_hid_output") == 0 || strcmp(type, "ota_begin") == 0 ||
+      strcmp(type, "ota_chunk") == 0 || strcmp(type, "ota_end") == 0 ||
+      strcmp(type, "ota_abort") == 0) {
     if (transport == PAIR_TRANSPORT_USB || s_auth[transport]) {
       return PAIR_LINE_FORWARD;
     }

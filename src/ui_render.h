@@ -23,5 +23,7 @@ void drawExprFrame(Arduino_GFX& roundLcd, AgentState selectedState,
 
 void drawPairingRound(Arduino_GFX* g, const char* code);
 void drawPairingRect(Arduino_GFX& rectLcd, const char* code);
+void drawOtaRound(Arduino_GFX* g, uint8_t progress);
+void drawOtaRect(Arduino_GFX& rectLcd, const char* phase, uint8_t progress);
 
 #endif // UI_RENDER_H

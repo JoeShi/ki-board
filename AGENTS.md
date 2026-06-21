@@ -89,6 +89,82 @@ ESP32-S3 开发板同时暴露两个 USB 串口，**用途完全不同**：
 - 两个口的 usbmodem 号**拔插后可能变化**，自动发现机制消除了这个问题。
 - pyserial 打开 CDC 口时必须 `dsrdtr=False, rtscts=False` 并显式 `port.dtr=False`，否则可能触发板子复位。
 
+## 固件烧录 / OTA
+
+当前固件使用双 OTA app 分区 (`app0` + `app1`)。首次从旧分区表迁移到 OTA 分区表时，必须先用 **CH340 Recovery Flash** 烧一次新固件/分区表；之后才可以用 USB CDC OTA 或 BLE OTA。
+
+### 构建固件
+
+普通硬件：
+
+```bash
+pio run -e esp32-s3
+```
+
+Key1/Key3 物理焊接对调的硬件：
+
+```bash
+pio run -e esp32-s3-swap-key1-key3
+```
+
+常用固件路径：
+
+```text
+.pio/build/esp32-s3/firmware.bin
+.pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+### Recovery Flash（CH340）
+
+用于首次写入 OTA 分区表、开发烧录、或 OTA 失败后的恢复。必须选择 CH340 烧录口，不是 `ki-board` CDC 口。
+
+```bash
+pio run -e esp32-s3-swap-key1-key3 --target upload --upload-port /dev/cu.usbmodemXXXX
+```
+
+Companion app 的 `Flash -> RECOVERY FLASH -> CH340 Flash` 也走同一路径。
+
+### Companion App OTA
+
+Companion app 的 `Flash -> OTA FLASH` 支持三种 transport：
+
+- `Current connection`
+- `USB CDC`
+- `BLE GATT`
+
+USB CDC OTA 最快；BLE OTA 需要先在 companion app 中完成 BLE pairing/auth。OTA 期间板子会显示升级进度，并暂停普通 button event / BLE status。
+
+### 命令行 OTA
+
+命令行入口是 Rust example：`companion/src-tauri/examples/ota_flash.rs`。
+
+BLE OTA（需要先用 companion app 配对一次，命令会从 keyring 读取 pairing token）：
+
+```bash
+cargo run --manifest-path companion/src-tauri/Cargo.toml \
+  --example ota_flash -- \
+  --transport ble \
+  --firmware .pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+USB CDC OTA：
+
+```bash
+cargo run --manifest-path companion/src-tauri/Cargo.toml \
+  --example ota_flash -- \
+  --transport usb \
+  --firmware .pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+可选参数：
+
+```bash
+--device-id <ble-id>   # 指定 BLE 设备
+--port <cdc-port>      # 指定 USB CDC 口
+```
+
+OTA 协议是 JSONL：`ota_begin` / `ota_chunk` / `ota_end` / `ota_abort`，USB CDC 和 BLE GATT 共用同一套协议。BLE GATT 复用 Kiro service 的 RX/TX characteristic，不走 BLE HID。
+
 ## Hook 集成架构
 
 kiro-cli 的 hook (agentSpawn / userPromptSubmit / stop / postToolUse) 通过 `scripts/kiro_board_hook.py` 将事件转为 JSONL 写入 CDC 串口，板子 `pollRegistrySerial()` 在 loop 中解析并更新 agent tile 显示。

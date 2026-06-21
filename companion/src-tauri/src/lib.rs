@@ -2,10 +2,12 @@ mod protocol;
 mod transport;
 
 use arboard::Clipboard;
+use base64::{engine::general_purpose, Engine as _};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{Sink, SinkExt, StreamExt};
 use keyring::Entry;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -39,6 +41,7 @@ const DEFAULT_DOUBAO_RESOURCE_ID: &str = "volc.bigasr.sauc.duration";
 const WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+const OTA_CHUNK_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Settings {
@@ -735,12 +738,16 @@ fn test_log_event(app: AppHandle) -> Result<(), String> {
 fn connect_device(
     app: AppHandle,
     state: State<SharedState>,
-    _port_name: Option<String>,
+    port_name: Option<String>,
 ) -> Result<(), String> {
-    connect_device_inner(app, state.inner().clone())
+    connect_device_inner(&app, state.inner(), port_name)
 }
 
-fn connect_device_inner(app: AppHandle, state: SharedState) -> Result<(), String> {
+fn connect_device_inner(
+    app: &AppHandle,
+    state: &SharedState,
+    port_name: Option<String>,
+) -> Result<(), String> {
     let settings = state
         .inner
         .lock()
@@ -774,7 +781,7 @@ fn connect_device_inner(app: AppHandle, state: SharedState) -> Result<(), String
         _ => match UsbSerialTransport::connect(selected_port.clone(), line_tx.clone()) {
             Ok(transport) => Box::new(transport),
             Err(usb_err) => {
-                log(&app, format!("USB auto-connect failed: {usb_err}"));
+                log(app, format!("USB auto-connect failed: {usb_err}"));
                 Box::new(BleGattTransport::connect(
                     non_empty(settings.ble_device_id.clone()),
                     line_tx,
@@ -825,7 +832,7 @@ fn connect_device_inner(app: AppHandle, state: SharedState) -> Result<(), String
     let _ = write_board_json_from_arc(&shared, &protocol::voice_engine_payload(&engine));
     spawn_board_reader(app.clone(), shared.clone(), line_rx, connection_id);
     spawn_companion_ping(shared);
-    log(&app, format!("connected via {:?}: {endpoint}", kind));
+    log(app, format!("connected via {:?}: {endpoint}", kind));
     Ok(())
 }
 
@@ -1030,6 +1037,171 @@ fn flash_firmware(
     } else {
         Err(format!("esptool failed: {text}"))
     }
+}
+
+fn requested_ota_transport(mode: &str) -> Result<Option<TransportKind>, String> {
+    match mode {
+        "current" | "" => Ok(None),
+        "usb" => Ok(Some(TransportKind::Usb)),
+        "ble" => Ok(Some(TransportKind::Ble)),
+        other => Err(format!("unknown OTA transport mode: {other}")),
+    }
+}
+
+fn ensure_ota_transport(
+    app: &AppHandle,
+    state: &SharedState,
+    transport_mode: &str,
+) -> Result<TransportKind, String> {
+    let requested = requested_ota_transport(transport_mode)?;
+    if let Some(kind) = requested {
+        let already_connected = {
+            let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+            inner.transport.is_some() && inner.transport_kind == kind
+        };
+        if !already_connected {
+            let settings_snapshot = {
+                let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+                inner.settings.connection_mode = match kind {
+                    TransportKind::Usb => "usb".to_string(),
+                    TransportKind::Ble => "ble".to_string(),
+                    TransportKind::None => "auto".to_string(),
+                };
+                inner.settings.clone()
+            };
+            let _ = save_settings_to_disk(app, &settings_snapshot);
+            connect_device_inner(&app, &state, None)?;
+        }
+    }
+
+    let kind = {
+        let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if inner.transport.is_none() {
+            return Err("device is not connected".to_string());
+        }
+        inner.transport_kind
+    };
+    if kind == TransportKind::None {
+        return Err("device is not connected".to_string());
+    }
+    Ok(kind)
+}
+
+fn wait_for_ota_auth(state: &SharedState, kind: TransportKind) -> Result<(), String> {
+    if kind == TransportKind::Usb {
+        return Ok(());
+    }
+    for _ in 0..60 {
+        let authenticated = {
+            state
+                .inner
+                .lock()
+                .map_err(|_| "state lock poisoned")?
+                .authenticated
+        };
+        if authenticated {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    Err("board is not authenticated; pair the BLE board first".to_string())
+}
+
+fn expect_ota_ok(response: serde_json::Value) -> Result<serde_json::Value, String> {
+    if response
+        .get("ok")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+    {
+        Ok(response)
+    } else {
+        Err(response
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("OTA request failed")
+            .to_string())
+    }
+}
+
+#[tauri::command]
+fn ota_flash_firmware(
+    app: AppHandle,
+    state: State<SharedState>,
+    firmware_path: String,
+    transport_mode: String,
+) -> Result<String, String> {
+    let firmware = PathBuf::from(firmware_path.trim());
+    if !firmware.exists() {
+        return Err("firmware file does not exist".to_string());
+    }
+    let image = fs::read(&firmware).map_err(|err| format!("read firmware failed: {err}"))?;
+    if image.is_empty() {
+        return Err("firmware file is empty".to_string());
+    }
+    let sha256 = format!("{:x}", Sha256::digest(&image));
+    let kind = ensure_ota_transport(&app, state.inner(), &transport_mode)?;
+    wait_for_ota_auth(state.inner(), kind)?;
+
+    log(
+        &app,
+        format!(
+            "OTA start via {:?}: {} ({} bytes)",
+            kind,
+            firmware.display(),
+            image.len()
+        ),
+    );
+
+    let begin_id = Uuid::new_v4().to_string();
+    expect_ota_ok(board_request(
+        state.inner(),
+        serde_json::json!({
+            "type": "ota_begin",
+            "request_id": begin_id,
+            "size": image.len(),
+            "sha256": sha256,
+        }),
+        Duration::from_secs(15),
+    )?)?;
+
+    let total = image.len();
+    let mut offset = 0usize;
+    let mut next_log_percent = 0usize;
+    while offset < total {
+        let end = (offset + OTA_CHUNK_BYTES).min(total);
+        let chunk = &image[offset..end];
+        let request_id = Uuid::new_v4().to_string();
+        let encoded = general_purpose::STANDARD.encode(chunk);
+        let response = expect_ota_ok(board_request(
+            state.inner(),
+            serde_json::json!({
+                "type": "ota_chunk",
+                "request_id": request_id,
+                "offset": offset,
+                "data_b64": encoded,
+            }),
+            Duration::from_secs(10),
+        )?)?;
+        offset = response
+            .get("offset")
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize)
+            .unwrap_or(end);
+        let percent = (offset * 100) / total;
+        if percent >= next_log_percent || offset == total {
+            log(&app, format!("OTA progress: {percent}%"));
+            next_log_percent = (percent + 5).min(100);
+        }
+    }
+
+    let end_id = Uuid::new_v4().to_string();
+    expect_ota_ok(board_request(
+        state.inner(),
+        serde_json::json!({"type": "ota_end", "request_id": end_id}),
+        Duration::from_secs(20),
+    )?)?;
+    log(&app, "OTA complete; board is rebooting");
+    Ok("OTA complete; board is rebooting".to_string())
 }
 
 #[tauri::command]
@@ -1831,8 +2003,7 @@ pub fn run() {
                     })
                     .unwrap_or(false);
                 if should_connect {
-                    let shared: SharedState = state.inner().clone();
-                    let _ = connect_device_inner(auto_app, shared);
+                    let _ = connect_device_inner(&auto_app, state.inner(), None);
                 }
             });
 
@@ -1858,6 +2029,7 @@ pub fn run() {
             get_keymap,
             set_keymap,
             flash_firmware,
+            ota_flash_firmware,
             start_recording,
             stop_recording_and_transcribe,
             cancel_recording,
