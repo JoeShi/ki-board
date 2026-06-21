@@ -7,22 +7,22 @@
   "hooks": {
     "agentSpawn": [
       {
-        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Coder"
       }
     ],
     "userPromptSubmit": [
       {
-        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Coder"
       }
     ],
     "stop": [
       {
-        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Coder"
       }
     ],
     "postToolUse": [
       {
-        "command": "python3 scripts/kiro_board_hook.py --agent-name coder --serial-port /dev/cu.usbmodem14C19F35A9082"
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Coder"
       }
     ]
   }

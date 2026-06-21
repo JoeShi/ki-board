@@ -1,0 +1,29 @@
+{
+  "name": "productarch",
+  "description": "Clarifies requirements, decomposes tasks, dispatches to coder/tester/cloud, and coordinates feedback loops.",
+  "prompt": "file://./prompts/productarch.md",
+  "keyboardShortcut": "ctrl+1",
+  "welcomeMessage": "ProductArch online",
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name ProductArch"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name ProductArch"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name ProductArch"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name ProductArch"
+      }
+    ]
+  }
+}

@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run -e esp32-s3 -e esp32-s3-swap-key1-key3
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Rename artifacts
+        run: |
+          cp .pio/build/esp32-s3/firmware.bin kiro-board-firmware-v${{ steps.version.outputs.version }}.bin
+          cp .pio/build/esp32-s3-swap-key1-key3/firmware.bin kiro-board-firmware-swap-v${{ steps.version.outputs.version }}.bin
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: kiro-board-firmware-*.bin
+
+  companion:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install frontend dependencies
+        working-directory: companion
+        run: npm ci
+
+      - name: Build Tauri (universal binary)
+        working-directory: companion
+        run: npx tauri build --target universal-apple-darwin
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Rename artifacts
+        run: |
+          # Tauri produces: target/universal-apple-darwin/release/bundle/macos/Ki-board.app
+          cd companion/src-tauri/target/universal-apple-darwin/release/bundle/macos
+          tar -czf ki-board-v${{ steps.version.outputs.version }}-universal.tar.gz Ki-board.app
+          mv ki-board-v${{ steps.version.outputs.version }}-universal.tar.gz "$GITHUB_WORKSPACE/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: companion
+          path: ki-board-*.tar.gz
+
+  release:
+    needs: [firmware, companion]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Ki-board v${{ steps.version.outputs.version }}
+          files: artifacts/*
+          generate_release_notes: true
+          make_latest: true

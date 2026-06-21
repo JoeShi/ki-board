@@ -82,19 +82,111 @@ ESP32-S3 开发板同时暴露两个 USB 串口，**用途完全不同**：
 | 端口 | 用途 | 识别方式 |
 |------|------|---------|
 | `/dev/cu.usbmodem5B901608471` | **CH340 烧录口** (仅用于 esptool 烧录) | VID `1A86:55D3`, ioreg 显示 "USB Single Serial" |
-| `/dev/cu.usbmodem14C19F35A9082` | **ESP32-S3 原生 USB CDC** (Serial 读写) | VID `303A:1001`, ioreg 显示 "Espressif ESP32..." |
+| `/dev/cu.usbmodem14C19F35A9082` | **ESP32-S3 原生 USB CDC** (Serial 读写) | VID `303A:1001`, ioreg 显示 "ki-board" |
 
-- **hook 脚本 `--serial-port` 必须用 CDC 口** (`usbmodem14C19F35A9082`)，因为板子的 `Serial.read()` 只在这个口上工作。
+- **hook 脚本现在支持自动发现 CDC 口**：通过匹配 VID=0x303A、PID=0x1001 和 product 字符串 "ki-board"，脚本无需手动指定 `--serial-port` 即可找到正确端口。
 - **`pio run --target upload --upload-port` 用 CH340 口** (`usbmodem5B901608471`)。
-- 两个口的 usbmodem 号**拔插后可能变化**，通过 `ioreg -p IOUSB -l | grep -A5 Espressif` 或 VID 来确认。
-- pyserial 打开 CDC 口时必须 `dsrdtr=False, rtscts=False` 并显式 `port.dtr=False`，否则可能触发板子复位。
+- 两个口的 usbmodem 号**拔插后可能变化**，自动发现机制消除了这个问题。
+- companion/调试脚本打开 ESP32-S3 原生 CDC 口时使用 `dsrdtr=False, rtscts=False`，并保持 `RTS=false`；当前固件需要主机置 `DTR=true` 才能可靠收发 Serial JSONL。
+
+## 固件烧录 / OTA
+
+当前固件使用双 OTA app 分区 (`app0` + `app1`)。首次从旧分区表迁移到 OTA 分区表时，必须先用 **CH340 Recovery Flash** 烧一次新固件/分区表；之后才可以用 USB CDC OTA 或 BLE OTA。
+
+### 构建固件
+
+普通硬件：
+
+```bash
+pio run -e esp32-s3
+```
+
+Key1/Key3 物理焊接对调的硬件：
+
+```bash
+pio run -e esp32-s3-swap-key1-key3
+```
+
+常用固件路径：
+
+```text
+.pio/build/esp32-s3/firmware.bin
+.pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+### Recovery Flash（CH340）
+
+用于首次写入 OTA 分区表、开发烧录、或 OTA 失败后的恢复。必须选择 CH340 烧录口，不是 `ki-board` CDC 口。
+
+```bash
+pio run -e esp32-s3-swap-key1-key3 --target upload --upload-port /dev/cu.usbmodemXXXX
+```
+
+Companion app 的 `Flash -> RECOVERY FLASH -> CH340 Flash` 也走同一路径。
+
+### Companion App OTA
+
+Companion app 的 `Flash -> OTA FLASH` 支持三种 transport：
+
+- `Current connection`
+- `USB CDC`
+- `BLE GATT`
+
+USB CDC OTA 最快；BLE OTA 需要先在 companion app 中完成 BLE pairing/auth。OTA 期间板子会显示升级进度，并暂停普通 button event / BLE status。
+
+### 命令行 OTA
+
+命令行入口是 Rust example：`companion/src-tauri/examples/ota_flash.rs`。
+
+BLE OTA（需要先用 companion app 配对一次，命令会从 keyring 读取 pairing token）：
+
+```bash
+cargo run --manifest-path companion/src-tauri/Cargo.toml \
+  --example ota_flash -- \
+  --transport ble \
+  --firmware .pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+USB CDC OTA：
+
+```bash
+cargo run --manifest-path companion/src-tauri/Cargo.toml \
+  --example ota_flash -- \
+  --transport usb \
+  --firmware .pio/build/esp32-s3-swap-key1-key3/firmware.bin
+```
+
+可选参数：
+
+```bash
+--device-id <ble-id>   # 指定 BLE 设备
+--port <cdc-port>      # 指定 USB CDC 口
+```
+
+OTA 协议是 JSONL：`ota_begin` / `ota_chunk` / `ota_end` / `ota_abort`，USB CDC 和 BLE GATT 共用同一套协议。BLE GATT 复用 Kiro service 的 RX/TX characteristic，不走 BLE HID。
 
 ## Hook 集成架构
 
 kiro-cli 的 hook (agentSpawn / userPromptSubmit / stop / postToolUse) 通过 `scripts/kiro_board_hook.py` 将事件转为 JSONL 写入 CDC 串口，板子 `pollRegistrySerial()` 在 loop 中解析并更新 agent tile 显示。
 
-hook 配置在 `.kiro/agents/<agent>.json` 的 `hooks` 字段中（非全局配置）。
+hook 脚本支持 USB 自动发现：通过 VID/PID + product 字符串 "ki-board" 匹配设备，无需在 hook 命令中硬编码串口路径。端口解析优先级为：`--serial-port` 参数 > `KIRO_BOARD_PORT` 环境变量 > 自动发现 > stdout 回退。
+
+hook 配置在 `.kiro/agents/<agent>.json` 的 `hooks` 字段中（非全局配置）。零配置用法示例：
+
+```bash
+python3 scripts/kiro_board_hook.py --agent-name planner
+```
 
 **注意事项：**
 - `agentSpawn` 仅在 agent **首次启动**时触发一次，切换回已运行的 agent 不会重新触发。因此板子重启后，需要对该 agent **发一次消息**（触发 `userPromptSubmit`）才能让 tile 显示出来。
 - 多个 agent 几乎同时触发 hook 时可能串口冲突，脚本已内置 lockfile + 重试机制。
+
+## 测试与验证要求
+
+涉及 companion、固件协议、语音状态机、ASR provider、USB CDC/BLE GATT 通信的改动，必须在交付前运行对应验证，并在最终回复里说明结果：
+
+- companion 后端改动：运行 `cargo check --manifest-path companion/src-tauri/Cargo.toml`，有单元测试时运行 `cargo test --manifest-path companion/src-tauri/Cargo.toml`。
+- companion 前端或 Tauri 命令签名改动：运行 `npm run build`（在 `companion/` 目录）。
+- 固件改动：至少运行 `pio run -e esp32-s3-swap-key1-key3`；需要板子生效时再烧录 swap 固件。
+- 修改协议解析、设置迁移、voice intent、ASR provider 分派时，应补充或更新单元测试，避免只靠手动试验。
+- 如果因为硬件未连接、端口被占用、网络不可用等原因无法跑某项验证，必须明确说明未验证项和原因。

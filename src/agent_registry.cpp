@@ -1,6 +1,35 @@
 #include "agent_registry.h"
+#include "hid_actions.h"
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <cstring>
+
+#include "ota_manager.h"
+#include "pairing.h"
+
+#define _STR(x) #x
+#define STR(x) _STR(x)
+#define FW_VERSION_STR STR(FW_VERSION_MAJOR) "." STR(FW_VERSION_MINOR) "." STR(FW_VERSION_PATCH)
+
+// Must exceed the companion heartbeat interval (5s) with margin so the board
+// does not flap the companion between online/offline between heartbeats.
+static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
+static unsigned long s_companionLastSeenMs = 0;
+static CompanionChannel s_activeChannel = CHANNEL_NONE;
+// Voice engine selected by the companion. When false (default) the board owns
+// dictation and emits the macOS Control double-tap on the middle key. In
+// third-party ASR mode the companion records, transcribes, and performs text
+// actions, so the board must not emit dictation/editing HID for voice input.
+static bool s_voiceEngineThirdParty = false;
+static constexpr const char* KEYMAP_NAMESPACE = "kirokb";
+static constexpr const char* KEYMAP_KEY = "companion_keymap";
+static constexpr const char* VOICE_ENGINE_KEY = "voice_engine";
+static constexpr const char* DEFAULT_KEYMAP_JSON =
+  "{\"keys\":["
+  "{\"label\":\"ESC\",\"action_type\":\"hotkey\",\"key\":\"Escape\",\"modifiers\":[]},"
+  "{\"label\":\"Voice\",\"action_type\":\"voice\",\"key\":\"Voice\",\"modifiers\":[]},"
+  "{\"label\":\"Next\",\"action_type\":\"agent_next\",\"key\":\"RightBracket\",\"modifiers\":[\"gui\"]}"
+  "]}";
 
 const char* agentStateName(AgentState state) {
   switch (state) {
@@ -29,6 +58,37 @@ void clearAgentSlot(AgentSlot& agent) {
   agent.state = AGENT_IDLE;
   agent.occupied = false;
   agent.lastUpdateMs = 0;
+}
+
+void agentRegistryBegin() {
+  Preferences prefs;
+  if (prefs.begin(KEYMAP_NAMESPACE, true)) {
+    String engine = prefs.getString(VOICE_ENGINE_KEY, "system");
+    s_voiceEngineThirdParty = (engine == "third_party" || engine == "doubao");
+    prefs.end();
+  }
+  Serial.printf("[VOICE] stored engine -> %s\n", s_voiceEngineThirdParty ? "third_party" : "system");
+}
+
+void companionMarkSeen() {
+  s_companionLastSeenMs = millis();
+}
+
+bool companionIsOnline() {
+  return s_companionLastSeenMs != 0 &&
+         millis() - s_companionLastSeenMs < COMPANION_ONLINE_GRACE_MS;
+}
+
+bool voiceEngineIsThirdParty() {
+  return s_voiceEngineThirdParty;
+}
+
+CompanionChannel companionActiveChannel() {
+  return s_activeChannel;
+}
+
+void companionSetChannel(CompanionChannel ch) {
+  s_activeChannel = ch;
 }
 
 static uint8_t findAgentSlotByName(const AgentSlot* slots, const char* name) {
@@ -101,7 +161,7 @@ static bool applyRegistryEvent(AgentSlot* slots, uint8_t& selectedAgent,
   return true;
 }
 
-static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const char* line) {
+bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output, CompanionChannel channel) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, line);
   if (err) {
@@ -109,6 +169,142 @@ static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const c
   }
 
   const char* type = doc["type"] | "";
+  if (strcmp(type, "hello") == 0 || strcmp(type, "companion_hello") == 0) {
+    s_activeChannel = channel;
+    JsonDocument response;
+    response["type"] = "hello_ack";
+    response["protocol"] = 1;
+    response["fw"] = FW_VERSION_STR;
+    response["channel"] = (channel == CHANNEL_BLE) ? "ble" : "usb";
+    JsonArray capabilities = response["capabilities"].to<JsonArray>();
+    capabilities.add("usb_cdc");
+    capabilities.add("ble_gatt");
+    capabilities.add("keymap");
+    capabilities.add("voice_state");
+    capabilities.add("ota");
+    capabilities.add("ota_usb_cdc");
+    capabilities.add("ota_ble_gatt");
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "ping") == 0) {
+    JsonDocument response;
+    response["type"] = "pong";
+    response["protocol"] = 1;
+    response["channel"] = (s_activeChannel == CHANNEL_BLE) ? "ble" : "usb";
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "companion_ping") == 0) {
+    companionMarkSeen();
+    return false;
+  }
+
+  if (otaHandleCommand(doc, output)) {
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "get_keymap") == 0) {
+    Preferences prefs;
+    String keymap = DEFAULT_KEYMAP_JSON;
+    if (prefs.begin(KEYMAP_NAMESPACE, true)) {
+      keymap = prefs.getString(KEYMAP_KEY, DEFAULT_KEYMAP_JSON);
+      prefs.end();
+    }
+    JsonDocument response;
+    deserializeJson(response, keymap);
+    response["type"] = "keymap_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "set_keymap") == 0) {
+    JsonDocument stored;
+    stored["keys"] = doc["keys"];
+    String raw;
+    serializeJson(stored, raw);
+
+    bool ok = false;
+    Preferences prefs;
+    if (prefs.begin(KEYMAP_NAMESPACE, false)) {
+      ok = prefs.putString(KEYMAP_KEY, raw) > 0;
+      prefs.end();
+    }
+
+    JsonDocument response;
+    response["type"] = "keymap_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = ok;
+    if (!ok) {
+      response["error"] = "NVS write failed";
+    }
+    response["keys"] = doc["keys"];
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "set_hid_output") == 0) {
+    const char* mode = doc["mode"] | "usb";
+    HidOutputMode m = (strcmp(mode, "ble") == 0) ? HID_OUTPUT_BLE : HID_OUTPUT_USB;
+    hidSetOutputMode(m);
+    JsonDocument response;
+    response["type"] = "hid_output_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    response["mode"] = (m == HID_OUTPUT_BLE) ? "ble" : "usb";
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "get_hid_output") == 0) {
+    JsonDocument response;
+    response["type"] = "hid_output_response";
+    response["request_id"] = doc["request_id"] | "";
+    response["ok"] = true;
+    response["mode"] = (hidGetOutputMode() == HID_OUTPUT_BLE) ? "ble" : "usb";
+    serializeJson(response, output);
+    output.println();
+    companionMarkSeen();
+    return false;
+  }
+
+  if (strcmp(type, "voice_engine") == 0) {
+    const char* engine = doc["engine"] | "system";
+    s_voiceEngineThirdParty = (strcmp(engine, "third_party") == 0 || strcmp(engine, "doubao") == 0);
+    bool persisted = false;
+    Preferences prefs;
+    if (prefs.begin(KEYMAP_NAMESPACE, false)) {
+      persisted = prefs.putString(VOICE_ENGINE_KEY, s_voiceEngineThirdParty ? "third_party" : "system") > 0;
+      prefs.end();
+    }
+    JsonDocument response;
+    response["type"] = "voice_engine_response";
+    response["ok"] = persisted;
+    response["engine"] = s_voiceEngineThirdParty ? "third_party" : "system";
+    response["asr_provider"] = doc["asr_provider"] | "";
+    response["persisted"] = persisted;
+    serializeJson(response, output);
+    output.println();
+    Serial.printf("[VOICE] engine -> %s\n", s_voiceEngineThirdParty ? "third_party" : "system");
+    companionMarkSeen();
+    return false;
+  }
+
   if (strcmp(type, "agent_state") != 0) {
     return false;
   }
@@ -132,7 +328,7 @@ static bool handleRegistryLine(AgentSlot* slots, uint8_t& selectedAgent, const c
 }
 
 bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selectedAgent) {
-  static char line[256];
+  static char line[2048];
   static size_t len = 0;
   bool changed = false;
 
@@ -147,7 +343,9 @@ bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selected
     if (ch == '\n') {
       line[len] = '\0';
       if (len > 0 && line[0] == '{') {
-        changed = handleRegistryLine(slots, selectedAgent, line) || changed;
+        if (pairingHandleLine(line, serial, PAIR_TRANSPORT_USB) == PAIR_LINE_FORWARD) {
+          changed = handleAgentRegistryLine(line, slots, selectedAgent, serial, CHANNEL_USB) || changed;
+        }
       }
       len = 0;
       continue;

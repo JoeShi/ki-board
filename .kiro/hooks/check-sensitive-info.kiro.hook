@@ -1,0 +1,13 @@
+{
+  "enabled": true,
+  "name": "敏感信息检测",
+  "description": "在消息发送给语言模型之前，检测剪贴板中是否包含邮箱、电话、API Key、IP 地址等敏感信息，若有则输出警告。",
+  "version": "1",
+  "when": {
+    "type": "promptSubmit"
+  },
+  "then": {
+    "type": "runCommand",
+    "command": "bash scripts/check_sensitive_info.sh"
+  }
+}

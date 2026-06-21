@@ -14,8 +14,16 @@ void drawBackspaceIcon(Arduino_GFX* g);
 void drawRectMetadata(Arduino_GFX& rectLcd, const AgentSlot* slots,
                       uint8_t selectedAgent, bool voiceRecording,
                       bool voiceEditing);
+void drawDeviceStatusBar(Arduino_GFX& rectLcd, const char* fwVersion,
+                         const char* deviceName, const char* channel,
+                         bool companionOnline);
 void drawExprFrame(Arduino_GFX& roundLcd, AgentState selectedState,
                    bool voiceRecording, uint8_t& currentExpr,
                    uint8_t& currentFrame, bool clear);
+
+void drawPairingRound(Arduino_GFX* g, const char* code);
+void drawPairingRect(Arduino_GFX& rectLcd, const char* code);
+void drawOtaRound(Arduino_GFX* g, uint8_t progress);
+void drawOtaRect(Arduino_GFX& rectLcd, const char* phase, uint8_t progress);
 
 #endif // UI_RENDER_H

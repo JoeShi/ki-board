@@ -5,15 +5,62 @@ Translate Kiro CLI hook events into board agent-state JSONL.
 Usage:
   python3 scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471
 
-When --serial-port is omitted, the script prints the JSONL payload to stdout.
+Serial port resolution priority:
+  1. --serial-port CLI argument (explicit override)
+  2. KIRO_BOARD_PORT environment variable
+  3. Auto-discovery via USB VID/PID (0x303A/0x1001) + product string "ki-board"
+  4. Fallback to stdout (prints JSONL payload to stdout)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import urllib.error
+import urllib.request
 from typing import Optional
+
+
+def discover_serial_port() -> Optional[str]:
+    """Auto-discover ki-board by USB VID/PID and product string.
+
+    Searches for a connected device matching:
+      - VID: 0x303A (Espressif)
+      - PID: 0x1001 (ESP32-S3 USB CDC)
+      - Product string containing "ki-board" (case-insensitive)
+
+    Returns the device path (e.g. /dev/cu.usbmodemXXX) or None.
+    """
+    try:
+        from serial.tools.list_ports import comports
+    except ImportError:
+        print(
+            "pyserial not installed, auto-discovery unavailable",
+            file=sys.stderr,
+        )
+        return None
+
+    matches = [
+        port.device
+        for port in comports()
+        if port.vid == 0x303A
+        and port.pid == 0x1001
+        and port.product
+        and "ki-board" in port.product.lower()
+    ]
+
+    if not matches:
+        return None
+
+    if len(matches) > 1:
+        print(
+            f"Warning: {len(matches)} ki-board devices found, using {matches[0]}",
+            file=sys.stderr,
+        )
+
+    return matches[0]
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,6 +73,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--serial-port",
         help="Optional serial port to write JSONL events to (for example /dev/cu.usbmodem5B901608471)",
+    )
+    parser.add_argument(
+        "--companion-url",
+        default=os.environ.get("KIRO_COMPANION_HOOK_URL", "http://127.0.0.1:47218/hook"),
+        help="Local companion hook endpoint. If unavailable, the script falls back to serial.",
     )
     return parser.parse_args()
 
@@ -130,6 +182,22 @@ def emit_line(line: str, serial_port: Optional[str]) -> None:
     print(line)
 
 
+def emit_to_companion(line: str, companion_url: str) -> bool:
+    if not companion_url:
+        return False
+    request = urllib.request.Request(
+        companion_url,
+        data=line.encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=0.4) as response:
+            return 200 <= response.status < 300
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
+
+
 def main() -> int:
     args = parse_args()
     event = read_hook_event()
@@ -137,7 +205,23 @@ def main() -> int:
     if payload is None:
         return 0
 
-    emit_line(json.dumps(payload, separators=(",", ":")), args.serial_port)
+    # Port resolution priority: CLI arg > env var > auto-discovery > stdout
+    serial_port = args.serial_port
+    if not serial_port:
+        serial_port = os.environ.get("KIRO_BOARD_PORT") or None
+    if not serial_port:
+        serial_port = discover_serial_port()
+        if serial_port:
+            print(
+                f"Auto-discovered ki-board at {serial_port}",
+                file=sys.stderr,
+            )
+
+    line = json.dumps(payload, separators=(",", ":"))
+    if emit_to_companion(line, args.companion_url):
+        return 0
+
+    emit_line(line, serial_port)
     return 0
 
 
