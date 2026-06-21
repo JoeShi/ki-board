@@ -3,6 +3,7 @@ mod transport;
 
 use arboard::Clipboard;
 use base64::{engine::general_purpose, Engine as _};
+use chrono::Local;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{Sink, SinkExt, StreamExt};
 use keyring::Entry;
@@ -17,7 +18,7 @@ use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -31,6 +32,7 @@ use flate2::read::GzDecoder;
 
 const KEYRING_SERVICE: &str = "kiro-keyboard-companion";
 const KEYRING_BLE_TOKEN: &str = "ble-pairing-token";
+const KEYRING_DOUBAO_API_KEY: &str = "doubao-api-key";
 const HOOK_ADDR: &str = "127.0.0.1:47218";
 // Two-way streaming, optimized variant (bigmodel_async). It only emits a new
 // packet when the recognition result changes, with lower first/last-word
@@ -62,10 +64,12 @@ struct Settings {
     // Preferred audio input device name (empty = system default).
     #[serde(default)]
     audio_input_device: String,
-    // Voice engine: "doubao" routes the middle key through companion Doubao ASR;
+    // Voice engine: "third_party" routes voice through the companion ASR provider;
     // "system" leaves recognition to the OS (board sends the HID Control double-tap).
     #[serde(default = "default_voice_engine")]
     voice_engine: String,
+    #[serde(default = "default_asr_provider")]
+    asr_provider: String,
 }
 
 impl Default for Settings {
@@ -83,6 +87,7 @@ impl Default for Settings {
             paste_after_transcribe: true,
             audio_input_device: String::new(),
             voice_engine: default_voice_engine(),
+            asr_provider: default_asr_provider(),
         }
     }
 }
@@ -92,7 +97,30 @@ fn default_connection_mode() -> String {
 }
 
 fn default_voice_engine() -> String {
+    "third_party".to_string()
+}
+
+fn default_asr_provider() -> String {
     "doubao".to_string()
+}
+
+fn normalize_voice_settings(settings: &mut Settings) {
+    if settings.voice_engine == "doubao" {
+        settings.voice_engine = "third_party".to_string();
+        if settings.asr_provider.trim().is_empty() {
+            settings.asr_provider = "doubao".to_string();
+        }
+    }
+    if settings.voice_engine != "system" && settings.voice_engine != "third_party" {
+        settings.voice_engine = default_voice_engine();
+    }
+    if settings.asr_provider.trim().is_empty() {
+        settings.asr_provider = default_asr_provider();
+    }
+}
+
+fn is_third_party_voice_engine(engine: &str) -> bool {
+    engine == "third_party" || engine == "doubao"
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -191,18 +219,42 @@ fn load_settings(app: &AppHandle) -> Settings {
     let Ok(raw) = fs::read_to_string(path) else {
         return Settings::default();
     };
-    serde_json::from_str(&raw).unwrap_or_default()
+    let mut settings: Settings = serde_json::from_str(&raw).unwrap_or_default();
+    normalize_voice_settings(&mut settings);
+    if !settings.doubao_api_key_file.trim().is_empty() {
+        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY) {
+            let _ = entry.set_password(&settings.doubao_api_key_file);
+        }
+        settings.doubao_api_key_file.clear();
+        let _ = save_settings_to_disk(app, &settings);
+    }
+    settings
 }
 
 fn save_settings_to_disk(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let dir = app_data_dir(app)?;
     fs::create_dir_all(&dir).map_err(|err| format!("create app data dir failed: {err}"))?;
-    let raw = serde_json::to_string_pretty(settings).map_err(|err| err.to_string())?;
+    let mut normalized = settings.clone();
+    normalize_voice_settings(&mut normalized);
+    let raw = serde_json::to_string_pretty(&normalized).map_err(|err| err.to_string())?;
     fs::write(settings_path(app)?, raw).map_err(|err| format!("write settings failed: {err}"))
 }
 
-fn log(app: &AppHandle, message: impl Into<String>) {
-    let message = format!("[{}] {}", timestamp_label(), message.into());
+fn log_event(
+    app: &AppHandle,
+    level: &str,
+    category: &str,
+    channel: &str,
+    message: impl Into<String>,
+) {
+    let message = format!(
+        "[{}] [{:<5}] [{:<10}] [{:<8}] {}",
+        timestamp_label(),
+        level,
+        category,
+        channel,
+        message.into()
+    );
     if let Some(state) = app.try_state::<SharedState>() {
         if let Ok(mut inner) = state.inner.lock() {
             inner.logs.insert(0, message.clone());
@@ -212,15 +264,12 @@ fn log(app: &AppHandle, message: impl Into<String>) {
     let _ = app.emit("companion-log", message);
 }
 
+fn log_error(app: &AppHandle, category: &str, channel: &str, message: impl Into<String>) {
+    log_event(app, "ERROR", category, channel, message);
+}
+
 fn timestamp_label() -> String {
-    let seconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() % 86_400)
-        .unwrap_or(0);
-    let hour = seconds / 3600;
-    let minute = (seconds % 3600) / 60;
-    let second = seconds % 60;
-    format!("{hour:02}:{minute:02}:{second:02}")
+    Local::now().format("%H:%M:%S%.3f").to_string()
 }
 
 fn emit_voice(app: &AppHandle, event: &str, text: impl Into<String>) {
@@ -319,6 +368,30 @@ fn clear_ble_token() {
     }
 }
 
+fn get_doubao_api_key(state: &SharedState) -> Option<String> {
+    if let Ok(value) = Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
+        .and_then(|entry| entry.get_password())
+    {
+        if !value.trim().is_empty() {
+            return Some(value);
+        }
+    }
+
+    let inner = state.inner.lock().ok()?;
+    inner
+        .doubao_api_key_cache
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            let value = inner.settings.doubao_api_key_file.clone();
+            if value.trim().is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        })
+}
+
 fn board_request(
     state: &SharedState,
     payload: serde_json::Value,
@@ -376,7 +449,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("");
             let board_id = value.get("board_id").and_then(|v| v.as_str()).unwrap_or("");
             let name = value.get("name").and_then(|v| v.as_str()).unwrap_or("Kiro KB");
-            log(app, format!("pairing code {code} — compare with the board, then press the middle (●) key to confirm"));
+            log_event(app, "INFO", "pairing", "ble", format!("code={code} compare_on_board=true"));
             if let Ok(mut inner) = state.inner.lock() {
                 inner.pairing_code = code.to_string();
             }
@@ -395,7 +468,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
                 .to_string();
             if !token.is_empty() {
                 if let Err(err) = set_ble_token(token) {
-                    log(app, format!("pairing: token save failed: {err}"));
+                    log_error(app, "pairing", "ble", format!("token save failed: {err}"));
                 }
             }
             let settings_snapshot = {
@@ -411,7 +484,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             if let Some(settings) = settings_snapshot {
                 let _ = save_settings_to_disk(app, &settings);
             }
-            log(app, "paired with board");
+            log_event(app, "INFO", "pairing", "ble", "paired with board");
             let _ = app.emit(
                 "pair-event",
                 serde_json::json!({"event":"ok","board_id":board_id}),
@@ -420,7 +493,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
         }
         "pair_failed" => {
             let reason = value.get("reason").and_then(|v| v.as_str()).unwrap_or("failed");
-            log(app, format!("pairing failed: {reason}"));
+            log_error(app, "pairing", "ble", format!("failed reason={reason}"));
             if let Ok(mut inner) = state.inner.lock() {
                 inner.pairing_code.clear();
             }
@@ -441,7 +514,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             if let Ok(mut inner) = state.inner.lock() {
                 inner.authenticated = false;
             }
-            log(app, "board requires pairing (auth_required)");
+            log_event(app, "WARN", "pairing", "ble", "auth_required");
             let _ = app.emit("pair-event", serde_json::json!({"event":"auth_required"}));
             return;
         }
@@ -459,7 +532,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             if let Some(settings) = settings_snapshot {
                 let _ = save_settings_to_disk(app, &settings);
             }
-            log(app, "board unpaired");
+            log_event(app, "INFO", "pairing", "ble", "board unpaired");
             let _ = app.emit("pair-event", serde_json::json!({"event":"unpaired"}));
             return;
         }
@@ -469,15 +542,18 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
         // Suppress routine heartbeat/status chatter from the log so it stays
         // readable. These arrive frequently and carry no actionable info here.
         if !matches!(message_type, "pong" | "ble_status" | "hello_ack") {
-            log(app, format!("board: {line}"));
+            log_event(app, "INFO", "board", "rx", line);
         }
         return;
     }
     let Ok(event) = serde_json::from_value::<BoardButtonEvent>(value) else {
         return;
     };
-    log(
+    log_event(
         app,
+        "INFO",
+        "command",
+        "board",
         format!(
             "button {} {} intent={} rec={} edit={}",
             event.key,
@@ -489,7 +565,7 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
     );
     if let Err(err) = handle_button_event(app, state, event) {
         set_last_error(state, err.clone());
-        log(app, format!("error: {err}"));
+        log_error(app, "command", "board", err);
     }
 }
 
@@ -505,7 +581,7 @@ fn handle_button_event(
         .settings
         .voice_engine
         .clone();
-    if engine == "doubao" {
+    if is_third_party_voice_engine(&engine) {
         if let Some(intent) = event.voice_intent.as_deref() {
             match intent {
                 "voice_start" => return start_recording_inner(app.clone(), state),
@@ -553,7 +629,7 @@ fn handle_button_event(
             }
             let should_commit = {
                 let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-                inner.settings.voice_engine == "doubao" &&
+                is_third_party_voice_engine(&inner.settings.voice_engine) &&
                     (inner.recording.is_some() || event.voice_recording.unwrap_or(false))
             };
             if should_commit {
@@ -569,14 +645,15 @@ fn handle_button_event(
             }
             let should_cancel = {
                 let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-                inner.settings.voice_engine == "doubao" &&
+                is_third_party_voice_engine(&inner.settings.voice_engine) &&
                     (inner.recording.is_some() || event.voice_recording.unwrap_or(false))
             };
             if should_cancel {
                 cancel_recording_inner(app.clone(), state)
-            } else if event.action == "short" {
-                press_command_right_bracket_key()
             } else {
+                // Normal agent switching is owned by the board's USB HID path.
+                // The companion only logs the button event; sending another CGEvent
+                // here is less reliable and can duplicate the hardware keypress.
                 Ok(())
             }
         }
@@ -622,38 +699,41 @@ fn get_settings(state: State<SharedState>) -> Result<Settings, String> {
 fn save_settings(
     app: AppHandle,
     state: State<SharedState>,
-    settings: Settings,
+    mut settings: Settings,
 ) -> Result<(), String> {
+    normalize_voice_settings(&mut settings);
     save_settings_to_disk(&app, &settings)?;
     let engine = settings.voice_engine.clone();
+    let provider = settings.asr_provider.clone();
     state
         .inner
         .lock()
         .map_err(|_| "state lock poisoned")?
         .settings = settings;
     // Best-effort: keep the board's voice-engine mode in sync (no-op if offline).
-    let _ = write_board_json_from_arc(state.inner(), &protocol::voice_engine_payload(&engine));
-    log(&app, format!("voice engine sync requested: {engine}"));
+    let _ = write_board_json_from_arc(state.inner(), &protocol::voice_engine_payload(&engine, &provider));
+    log_event(&app, "INFO", "config", "tx", format!("voice_engine={engine} asr_provider={provider}"));
     Ok(())
 }
 
 #[tauri::command]
 fn save_doubao_api_key(app: AppHandle, state: State<SharedState>, api_key: String) -> Result<(), String> {
-    let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    inner.doubao_api_key_cache = Some(api_key.clone());
-    inner.settings.doubao_api_key_file = api_key;
-    let settings = inner.settings.clone();
-    drop(inner);
-    save_settings_to_disk(&app, &settings)
+    state
+        .inner
+        .lock()
+        .map_err(|_| "state lock poisoned")?
+        .doubao_api_key_cache = Some(api_key.clone());
+    Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
+        .map_err(|err| format!("keyring unavailable: {err}"))?
+        .set_password(&api_key)
+        .map_err(|err| format!("keyring save failed: {err}"))?;
+    log_event(&app, "INFO", "config", "keyring", "saved Doubao API key");
+    Ok(())
 }
 
 #[tauri::command]
 fn has_doubao_api_key(state: State<SharedState>) -> Result<bool, String> {
-    let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-    if inner.doubao_api_key_cache.as_deref().is_some_and(|v| !v.trim().is_empty()) {
-        return Ok(true);
-    }
-    Ok(!inner.settings.doubao_api_key_file.trim().is_empty())
+    Ok(get_doubao_api_key(state.inner()).is_some())
 }
 
 #[tauri::command]
@@ -730,7 +810,7 @@ fn clear_logs(state: State<SharedState>) -> Result<(), String> {
 
 #[tauri::command]
 fn test_log_event(app: AppHandle) -> Result<(), String> {
-    log(&app, "test log event from tauri backend");
+    log_event(&app, "INFO", "test", "-", "test log event from tauri backend");
     Ok(())
 }
 
@@ -754,11 +834,15 @@ fn connect_device_inner(
         .map_err(|_| "state lock poisoned")?
         .settings
         .clone();
-    let selected_port = if settings.serial_port.trim().is_empty() {
-        None
-    } else {
-        Some(settings.serial_port.clone())
-    };
+    let selected_port = port_name
+        .filter(|p| !p.is_empty())
+        .or_else(|| {
+            if settings.serial_port.trim().is_empty() {
+                None
+            } else {
+                Some(settings.serial_port.clone())
+            }
+        });
     {
         let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
         if let Some(mut existing) = inner.transport.take() {
@@ -771,24 +855,24 @@ fn connect_device_inner(
         inner.pending_requests.clear();
     }
     let (line_tx, line_rx) = mpsc::channel::<String>();
-    let mode = settings.connection_mode.as_str();
-    let transport: Box<dyn BoardTransport> = match mode {
-        "usb" => Box::new(UsbSerialTransport::connect(selected_port, line_tx)?),
-        "ble" => Box::new(BleGattTransport::connect(
-            non_empty(settings.ble_device_id.clone()),
-            line_tx,
-        )?),
-        _ => match UsbSerialTransport::connect(selected_port.clone(), line_tx.clone()) {
-            Ok(transport) => Box::new(transport),
+    let transport: Box<dyn BoardTransport> =
+        match settings.connection_mode.as_str() {
+            "usb" => Box::new(UsbSerialTransport::connect(selected_port.clone(), line_tx.clone())?),
+            "ble" => Box::new(BleGattTransport::connect(
+                non_empty(settings.ble_device_id.clone()),
+                line_tx,
+            )?),
+            _ => match UsbSerialTransport::connect(selected_port.clone(), line_tx.clone()) {
+            Ok(t) => Box::new(t),
             Err(usb_err) => {
-                log(app, format!("USB auto-connect failed: {usb_err}"));
+                log_error(&app, "transport", "usb", format!("auto-connect failed: {usb_err}"));
                 Box::new(BleGattTransport::connect(
                     non_empty(settings.ble_device_id.clone()),
                     line_tx,
                 )?)
             }
-        },
-    };
+            },
+        };
     let kind = transport.kind();
     let endpoint = transport.endpoint();
     let connection_id = {
@@ -829,10 +913,22 @@ fn connect_device_inner(
         let inner = shared.inner.lock().map_err(|_| "state lock poisoned")?;
         inner.settings.voice_engine.clone()
     };
-    let _ = write_board_json_from_arc(&shared, &protocol::voice_engine_payload(&engine));
+    let provider = {
+        let inner = shared.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.settings.asr_provider.clone()
+    };
+    let _ = write_board_json_from_arc(&shared, &protocol::voice_engine_payload(&engine, &provider));
+    // Auto-sync HID output based on actual transport kind.
+    let hid_mode = if kind == TransportKind::Ble { "ble" } else { "usb" };
+    let _ = write_board_json_from_arc(&shared, &protocol::set_hid_output_payload(hid_mode));
     spawn_board_reader(app.clone(), shared.clone(), line_rx, connection_id);
     spawn_companion_ping(shared);
-    log(app, format!("connected via {:?}: {endpoint}", kind));
+    let channel = match kind {
+        TransportKind::Usb => "usb",
+        TransportKind::Ble => "ble",
+        TransportKind::None => "-",
+    };
+    log_event(&app, "INFO", "transport", channel, format!("connected endpoint={endpoint}"));
     Ok(())
 }
 
@@ -872,7 +968,7 @@ fn forget_device(app: AppHandle, state: State<SharedState>) -> Result<(), String
         inner.settings.clone()
     };
     save_settings_to_disk(&app, &settings_snapshot)?;
-    log(&app, "forgot paired device");
+    log_event(&app, "INFO", "pairing", "tx", "forgot paired device");
     Ok(())
 }
 
@@ -997,6 +1093,7 @@ fn set_keymap(state: State<SharedState>, keys: Vec<KeyBinding>) -> Result<(), St
 #[tauri::command]
 fn flash_firmware(
     app: AppHandle,
+    state: State<SharedState>,
     firmware_path: String,
     port_name: Option<String>,
 ) -> Result<String, String> {
@@ -1009,7 +1106,18 @@ fn flash_firmware(
         .or_else(discover_flash_port)
         .ok_or("CH340 flash serial port not found")?;
 
-    log(&app, format!("flashing {} to {port}", firmware.display()));
+    log_event(&app, "INFO", "flash", "ch340", format!("start firmware={} port={port}", firmware.display()));
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        if let Some(mut transport) = inner.transport.take() {
+            transport.disconnect();
+        }
+        inner.transport_kind = TransportKind::None;
+        inner.endpoint.clear();
+        inner.device_name.clear();
+        inner.connection_id = inner.connection_id.wrapping_add(1);
+        inner.pending_requests.clear();
+    }
     let output = Command::new("python3")
         .args([
             "-m",
@@ -1030,9 +1138,13 @@ fn flash_firmware(
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     for line in text.lines() {
-        log(&app, format!("flash: {line}"));
+        log_event(&app, "INFO", "flash", "ch340", line);
     }
     if output.status.success() {
+        thread::sleep(Duration::from_secs(2));
+        if let Err(err) = connect_device_inner(&app, state.inner(), None) {
+            log_error(&app, "transport", "usb", format!("reconnect after flash failed: {err}"));
+        }
         Ok(text)
     } else {
         Err(format!("esptool failed: {text}"))
@@ -1061,12 +1173,7 @@ fn ensure_ota_transport(
         };
         if !already_connected {
             let settings_snapshot = {
-                let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
-                inner.settings.connection_mode = match kind {
-                    TransportKind::Usb => "usb".to_string(),
-                    TransportKind::Ble => "ble".to_string(),
-                    TransportKind::None => "auto".to_string(),
-                };
+                let inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
                 inner.settings.clone()
             };
             let _ = save_settings_to_disk(app, &settings_snapshot);
@@ -1142,8 +1249,11 @@ fn ota_flash_firmware(
     let kind = ensure_ota_transport(&app, state.inner(), &transport_mode)?;
     wait_for_ota_auth(state.inner(), kind)?;
 
-    log(
+    log_event(
         &app,
+        "INFO",
+        "ota",
+        "-",
         format!(
             "OTA start via {:?}: {} ({} bytes)",
             kind,
@@ -1189,7 +1299,7 @@ fn ota_flash_firmware(
             .unwrap_or(end);
         let percent = (offset * 100) / total;
         if percent >= next_log_percent || offset == total {
-            log(&app, format!("OTA progress: {percent}%"));
+            log_event(&app, "INFO", "ota", "-", format!("OTA progress: {percent}%"));
             next_log_percent = (percent + 5).min(100);
         }
     }
@@ -1200,7 +1310,7 @@ fn ota_flash_firmware(
         serde_json::json!({"type": "ota_end", "request_id": end_id}),
         Duration::from_secs(20),
     )?)?;
-    log(&app, "OTA complete; board is rebooting");
+    log_event(&app, "INFO", "ota", "-", "OTA complete; board is rebooting");
     Ok("OTA complete; board is rebooting".to_string())
 }
 
@@ -1227,19 +1337,32 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
         .map_err(|_| "state lock poisoned")?
         .settings
         .clone();
-    let api_key = state
-        .inner
-        .lock()
-        .ok()
-        .and_then(|inner| {
-            inner.doubao_api_key_cache.clone()
-                .filter(|v| !v.trim().is_empty())
-                .or_else(|| {
-                    let v = inner.settings.doubao_api_key_file.clone();
-                    if v.trim().is_empty() { None } else { Some(v) }
-                })
-        })
-        .ok_or("Doubao X-Api-Key missing. Paste it into the Voice page and click Start.")?;
+    if settings.asr_provider != "doubao" {
+        return Err(format!(
+            "ASR provider '{}' is not implemented yet.",
+            settings.asr_provider
+        ));
+    }
+    let asr_provider = settings.asr_provider.clone();
+    log_event(
+        &app,
+        "INFO",
+        "voice",
+        "asr",
+        format!(
+            "start requested provider={asr_provider} endpoint={} resource={} device={}",
+            settings.doubao_endpoint,
+            settings.doubao_resource_id,
+            if settings.audio_input_device.trim().is_empty() {
+                "default"
+            } else {
+                settings.audio_input_device.as_str()
+            }
+        ),
+    );
+    let api_key = get_doubao_api_key(state)
+        .ok_or("Doubao X-Api-Key missing. Paste it into the Voice page and click Save Voice.")?;
+    log_event(&app, "INFO", "voice", "asr", "api key available");
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel();
     let thread_app = app.clone();
@@ -1254,7 +1377,7 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
         if let Err(err) = &result {
             mark_recording_error(&thread_state, err.clone());
             emit_voice(&thread_app, "error", err.clone());
-            log(&thread_app, format!("voice error: {err}"));
+            log_error(&thread_app, "voice", "asr", err.clone());
         }
         let _ = done_tx.send(result);
     });
@@ -1275,7 +1398,7 @@ fn start_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Stri
     hide_main_window_inner(&app);
     play_sound("Tink");
     let _ = app.emit("voice-recording-start", ());
-    log(&app, "recording started");
+    log_event(&app, "INFO", "voice", "asr", format!("recording started provider={asr_provider}"));
     Ok(())
 }
 
@@ -1316,8 +1439,25 @@ fn stop_recording_and_transcribe_inner(
         };
         match transcript {
             Ok(text) => {
-                // Close the overlay FIRST so focus returns to the user's app,
-                // then paste into it.
+                {
+                    if let Ok(mut inner) = state_clone.inner.lock() {
+                        inner.busy = false;
+                        inner.last_transcript = text.clone();
+                        inner.last_partial.clear();
+                        inner.last_error.clear();
+                    }
+                }
+                emit_voice(&app_clone, "final", &text);
+                log_event(
+                    &app_clone,
+                    "INFO",
+                    "voice",
+                    "asr",
+                    format!("final transcript chars={}", text.chars().count()),
+                );
+                thread::sleep(Duration::from_millis(250));
+                // Let the overlay show the final transcript briefly, then close
+                // it so focus returns to the user's app before paste.
                 let _ = app_clone.emit("voice-recording-stop", ());
                 close_voice_overlay(&app_clone);
                 thread::sleep(Duration::from_millis(120));
@@ -1338,15 +1478,6 @@ fn stop_recording_and_transcribe_inner(
                         let _ = press_return_key();
                     }
                 }
-                {
-                    if let Ok(mut inner) = state_clone.inner.lock() {
-                        inner.busy = false;
-                        inner.last_transcript = text.clone();
-                        inner.last_partial.clear();
-                        inner.last_error.clear();
-                    }
-                }
-                emit_voice(&app_clone, "final", &text);
                 write_voice_state(&state_clone, "idle");
             }
             Err(err) => {
@@ -1355,7 +1486,7 @@ fn stop_recording_and_transcribe_inner(
                     inner.last_error = err.clone();
                 }
                 emit_voice(&app_clone, "error", &err);
-                log(&app_clone, format!("voice error: {err}"));
+                log_error(&app_clone, "voice", "asr", err);
                 write_voice_state(&state_clone, "idle");
             }
         }
@@ -1385,7 +1516,7 @@ fn cancel_recording_inner(app: AppHandle, state: &SharedState) -> Result<(), Str
         let _ = recording.stop_tx.send(());
         // Don't block waiting — just drop the handle; the thread will exit.
         play_sound("Basso");
-        log(&app, "recording canceled");
+        log_event(&app, "INFO", "voice", "asr", "recording canceled");
     }
     write_voice_state(state, "idle");
     let _ = app.emit("voice-recording-stop", ());
@@ -1437,6 +1568,7 @@ async fn stream_doubao_asr(
         .await
         .map_err(|_| "Doubao websocket connect timed out".to_string())?
         .map_err(|err| format!("Doubao websocket connect failed: {err}"))?;
+    log_event(&app, "INFO", "voice", "asr", "websocket connected provider=doubao");
     let (mut sink, mut stream) = ws.split();
 
     let (audio_tx, mut audio_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<i16>>();
@@ -1444,6 +1576,7 @@ async fn stream_doubao_asr(
     audio_stream
         .play()
         .map_err(|err| format!("start audio stream failed: {err}"))?;
+    log_event(&app, "INFO", "voice", "audio", "input stream started");
 
     let mut full_request = serde_json::json!({
         "user": {
@@ -1485,6 +1618,7 @@ async fn stream_doubao_asr(
     let mut final_deadline: Option<tokio::time::Instant> = None;
     let mut stop_rx = stop_rx;
     let mut stopped = false;
+    let mut audio_packets_sent: u32 = 0;
     loop {
         tokio::select! {
             maybe_samples = audio_rx.recv(), if !stopped => {
@@ -1494,6 +1628,16 @@ async fn stream_doubao_asr(
                         let chunk: Vec<i16> = pending.drain(..SAMPLES_PER_PACKET).collect();
                         let bytes = pcm16_to_le_bytes(&chunk);
                         send_ws_binary(&mut sink, build_audio_frame(sequence, false, &bytes), "send audio").await?;
+                        audio_packets_sent += 1;
+                        if audio_packets_sent == 1 || audio_packets_sent % 10 == 0 {
+                            log_event(
+                                &app,
+                                "INFO",
+                                "voice",
+                                "asr",
+                                format!("audio packets sent={audio_packets_sent}"),
+                            );
+                        }
                         sequence += 1;
                     }
                 }
@@ -1504,6 +1648,13 @@ async fn stream_doubao_asr(
                 if let Message::Binary(bytes) = msg {
                     if let Some(text) = parse_server_frame(&bytes)? {
                         final_text = text.clone();
+                        log_event(
+                            &app,
+                            "INFO",
+                            "voice",
+                            "asr",
+                            format!("partial transcript chars={}", text.chars().count()),
+                        );
                         emit_voice(&app, "partial", &text);
                     }
                 }
@@ -1513,7 +1664,14 @@ async fn stream_doubao_asr(
                 let remainder = std::mem::take(&mut pending);
                 let bytes = pcm16_to_le_bytes(&remainder);
                 let _ = send_ws_binary(&mut sink, build_audio_frame(-sequence, true, &bytes), "send final audio").await;
-                final_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(3000));
+                log_event(
+                    &app,
+                    "INFO",
+                    "voice",
+                    "asr",
+                    format!("final audio sent packets={audio_packets_sent} tail_bytes={}", bytes.len()),
+                );
+                final_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(8000));
             }
             _ = async { tokio::time::sleep_until(final_deadline.unwrap()).await }, if final_deadline.is_some() => {
                 break;
@@ -1522,6 +1680,13 @@ async fn stream_doubao_asr(
     }
     drop(audio_stream);
     let _ = sink.close().await;
+    log_event(
+        &app,
+        "INFO",
+        "voice",
+        "asr",
+        format!("websocket closed final_chars={}", final_text.chars().count()),
+    );
     Ok(final_text)
 }
 
@@ -1857,11 +2022,11 @@ fn spawn_hook_server(app: AppHandle, state: SharedState) {
         let listener = match TcpListener::bind(HOOK_ADDR) {
             Ok(listener) => listener,
             Err(err) => {
-                log(&app, format!("hook server bind failed: {err}"));
+                log_error(&app, "hook", "http", format!("server bind failed: {err}"));
                 return;
             }
         };
-        log(&app, format!("hook server listening on {HOOK_ADDR}"));
+        log_event(&app, "INFO", "hook", "http", format!("server listening addr={HOOK_ADDR}"));
         for stream in listener.incoming().flatten() {
             handle_hook_stream(&app, &state, stream);
         }
@@ -1904,7 +2069,7 @@ fn handle_hook_stream(app: &AppHandle, state: &SharedState, mut stream: TcpStrea
     };
     let value = serde_json::to_value(payload).unwrap_or_else(|_| serde_json::json!({}));
     let _ = write_board_json_from_arc(state, &value);
-    log(app, format!("hook forwarded: {value}"));
+    log_event(app, "INFO", "hook", "http", format!("forwarded {value}"));
     let _ = stream.write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n");
 }
 
@@ -2095,6 +2260,30 @@ mod tests {
                 .unwrap(),
             Err("websocket failed".to_string())
         );
+    }
+
+    #[test]
+    fn normalizes_legacy_doubao_engine_to_third_party_provider() {
+        let mut settings = Settings {
+            voice_engine: "doubao".to_string(),
+            asr_provider: String::new(),
+            ..Settings::default()
+        };
+
+        normalize_voice_settings(&mut settings);
+
+        assert_eq!(settings.voice_engine, "third_party");
+        assert_eq!(settings.asr_provider, "doubao");
+        assert!(is_third_party_voice_engine(&settings.voice_engine));
+    }
+
+    #[test]
+    fn voice_engine_payload_includes_asr_provider() {
+        let payload = protocol::voice_engine_payload("third_party", "doubao");
+
+        assert_eq!(payload["type"], "voice_engine");
+        assert_eq!(payload["engine"], "third_party");
+        assert_eq!(payload["asr_provider"], "doubao");
     }
 
     #[test]

@@ -12,10 +12,10 @@
 - **圆形状态 LCD**：0.71 寸圆形屏播放当前选中 Agent 的 Kiro 表情动画
 - **矩形信息 LCD**：1.47 寸矩形屏以 2x2 布局显示最多 4 个 Agent 的名称和状态
 - **USB HID 键盘**：USB 线即插即用，无需 PC 端驱动软件
-- **Ghostty split 切换**：左键发送 `Command + ]`，切换到下一个 Agent split
-- **macOS 语音输入工作流**：中键双击 `Control` 唤起语音输入，再次按下发送 `Enter`
-- **取消 / 编辑 / 打断**：右键根据当前状态发送 `ESC`、单次 `Backspace` 或连续 `Backspace`
-- **Kiro hook 状态同步**：Kiro CLI hook 通过 USB CDC 串口把 Agent 状态写入板子
+- **Ghostty split 切换**：右键在普通状态下切换到下一个 Agent split
+- **语音输入工作流**：支持 macOS 系统语音输入，以及 companion 驱动的 3P ASR
+- **取消 / 编辑 / 打断**：左键处理停止/退出/打断，右键在语音编辑态处理 `Backspace`
+- **Kiro hook 状态同步**：Kiro CLI hook 通过 companion 当前传输通道把 Agent 状态写入板子
 - **焊接交换版支持**：可通过 `KIRO_HW_SWAP_KEY1_KEY3=1` 适配物理 Key1 / Key3 对调的板子
 
 ---
@@ -70,7 +70,34 @@
 | Running | 中键发送输入、`userPromptSubmit` | 工作表情 / `Run` |
 | Error | hook 上报工具错误 | 等待/错误表情 / `Error` |
 
-Kiro CLI hook 事件通过 `scripts/kiro_board_hook.py` 转成 JSONL，经 ESP32-S3 原生 USB CDC 串口写入板子。
+Kiro CLI hook 事件通过 `scripts/kiro_board_hook.py` 转成 JSONL，优先交给 companion，再由 companion 通过当前板子传输通道写入板子；companion 不可用时可回退到 ESP32-S3 原生 USB CDC 串口。
+
+---
+
+## 🔌 通讯与语音架构
+
+详细协议和图见 [shared/protocol/serial-protocol.md](shared/protocol/serial-protocol.md)。
+
+```mermaid
+flowchart LR
+  Board[ESP32-S3 板子]
+  Companion[Companion App]
+  Host[macOS / Ghostty / Kiro]
+  ASR[3P ASR Provider<br/>Doubao today]
+
+  Board -- USB HID / BLE HID<br/>键盘输入 --> Host
+  Board <-- USB CDC / BLE GATT<br/>JSONL 配置/状态/事件 --> Companion
+  Companion -- audio stream --> ASR
+  ASR -- transcript --> Companion
+  Companion -- paste / Enter / Backspace / Cmd+] --> Host
+```
+
+分工原则：
+
+- HID 只负责像键盘一样输入。
+- USB CDC / BLE GATT 负责配置、状态、按键事件和 Agent 状态同步。
+- `voice_engine=system` 时，板子触发 macOS 系统语音输入。
+- `voice_engine=third_party` 时，companion 负责录音、调用 `asr_provider`、粘贴、发送和退格；当前 provider 是 `doubao`。
 
 ---
 
@@ -80,7 +107,8 @@ Kiro CLI hook 事件通过 `scripts/kiro_board_hook.py` 转成 JSONL，经 ESP32
 - **平台**：pioarduino fork
 - **USB HID**：Arduino ESP32 内置 `USB.h` + `USBHIDKeyboard.h`
 - **屏幕驱动**：[Arduino_GFX](https://github.com/moononournation/Arduino_GFX)
-- **状态协议**：Kiro CLI hook -> Python JSONL bridge -> USB CDC Serial -> ESP32
+- **状态协议**：Kiro CLI hook -> Companion -> USB CDC / BLE GATT JSONL -> ESP32
+- **3P ASR**：Companion provider adapter，当前实现 Doubao / Volcengine
 - **BLE HID（备用）**：[HijelHID_BLEKeyboard](https://github.com/HijelHub/HijelHID_BLEKeyboard) (基于 NimBLE)
 - **Web 配置（备用模块）**：`webconfig.*` + `webpage.h`，当前主固件未启动
 

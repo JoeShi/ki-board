@@ -218,22 +218,22 @@ static void switchAgent(bool sendHid) {
 static void startVoiceInput() {
   voiceRecording = true;
   voiceEditing = false;
-  // System engine: drive macOS dictation with the Control double-tap. Doubao
-  // engine: the companion records via the button_event, so we must not emit the
-  // dictation HID (otherwise both system dictation and Doubao fire at once).
-  if (!voiceEngineIsDoubao()) {
+  // System engine: drive macOS dictation with the Control double-tap.
+  // Third-party ASR: the companion records via the button_event, so we must not emit the
+  // dictation HID (otherwise both system dictation and third-party ASR fire at once).
+  if (!voiceEngineIsThirdParty()) {
     sendDoubleControl();
   }
   Serial.printf("[VOICE] Agent %d recording (%s)\n",
                 selectedAgent + 1,
-                voiceEngineIsDoubao() ? "doubao" : "system");
+                voiceEngineIsThirdParty() ? "third_party" : "system");
   refreshUi();
 }
 
 static void sendVoiceInput() {
-  // System engine submits with HID Return. Doubao text operations are executed
+  // System engine submits with HID Return. Third-party ASR text operations are executed
   // by the companion so they use the same focus path as paste.
-  if (!voiceEngineIsDoubao()) {
+  if (!voiceEngineIsThirdParty()) {
     hidTap(KEY_RETURN);
   }
   voiceRecording = false;
@@ -248,7 +248,7 @@ static void sendVoiceInput() {
 
 static void stopDictationForEditing() {
   voiceRecording = false;
-  if (voiceEngineIsDoubao()) {
+  if (voiceEngineIsThirdParty()) {
     voiceEditing = true;
   } else {
     hidTap(KEY_ESC);
@@ -305,7 +305,7 @@ static void handleLeftShort() {
 
 static void backspaceFromRecording() {
   voiceRecording = false;
-  if (voiceEngineIsDoubao()) {
+  if (voiceEngineIsThirdParty()) {
     voiceEditing = false;
   } else {
     hidTap(KEY_ESC);
@@ -324,14 +324,14 @@ static void handleRightShort() {
   }
 
   if (voiceEditing) {
-    if (!voiceEngineIsDoubao()) {
+    if (!voiceEngineIsThirdParty()) {
       hidTap(KEY_BACKSPACE);
     }
     Serial.println("[VOICE] Backspace");
     return;
   }
 
-  switchAgent(!companionIsOnline());
+  switchAgent(true);
 }
 
 static void handleRightLong() {
@@ -341,7 +341,7 @@ static void handleRightLong() {
   }
 
   if (voiceEditing) {
-    if (!voiceEngineIsDoubao()) {
+    if (!voiceEngineIsThirdParty()) {
       hidTap(KEY_BACKSPACE);
     }
     Serial.println("[VOICE] Backspace");
@@ -414,7 +414,7 @@ static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now
     return;
   }
 
-  if (voiceEngineIsDoubao()) {
+  if (voiceEngineIsThirdParty()) {
     emitButtonEventWithAction(KEY_RIGHT_LOGICAL, "repeat", now - btn.pressedMs);
   } else {
     hidTap(KEY_BACKSPACE);

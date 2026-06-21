@@ -12,10 +12,10 @@
 static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
 static unsigned long s_companionLastSeenMs = 0;
 // Voice engine selected by the companion. When false (default) the board owns
-// dictation and emits the macOS Control double-tap on the middle key. When the
-// companion switches to Doubao ASR it records itself, so the board must NOT emit
-// the dictation HID.
-static bool s_voiceEngineDoubao = false;
+// dictation and emits the macOS Control double-tap on the middle key. In
+// third-party ASR mode the companion records, transcribes, and performs text
+// actions, so the board must not emit dictation/editing HID for voice input.
+static bool s_voiceEngineThirdParty = false;
 static constexpr const char* KEYMAP_NAMESPACE = "kirokb";
 static constexpr const char* KEYMAP_KEY = "companion_keymap";
 static constexpr const char* VOICE_ENGINE_KEY = "voice_engine";
@@ -59,10 +59,10 @@ void agentRegistryBegin() {
   Preferences prefs;
   if (prefs.begin(KEYMAP_NAMESPACE, true)) {
     String engine = prefs.getString(VOICE_ENGINE_KEY, "system");
-    s_voiceEngineDoubao = (engine == "doubao");
+    s_voiceEngineThirdParty = (engine == "third_party" || engine == "doubao");
     prefs.end();
   }
-  Serial.printf("[VOICE] stored engine -> %s\n", s_voiceEngineDoubao ? "doubao" : "system");
+  Serial.printf("[VOICE] stored engine -> %s\n", s_voiceEngineThirdParty ? "third_party" : "system");
 }
 
 void companionMarkSeen() {
@@ -74,8 +74,8 @@ bool companionIsOnline() {
          millis() - s_companionLastSeenMs < COMPANION_ONLINE_GRACE_MS;
 }
 
-bool voiceEngineIsDoubao() {
-  return s_voiceEngineDoubao;
+bool voiceEngineIsThirdParty() {
+  return s_voiceEngineThirdParty;
 }
 
 static uint8_t findAgentSlotByName(const AgentSlot* slots, const char* name) {
@@ -269,21 +269,22 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
 
   if (strcmp(type, "voice_engine") == 0) {
     const char* engine = doc["engine"] | "system";
-    s_voiceEngineDoubao = (strcmp(engine, "doubao") == 0);
+    s_voiceEngineThirdParty = (strcmp(engine, "third_party") == 0 || strcmp(engine, "doubao") == 0);
     bool persisted = false;
     Preferences prefs;
     if (prefs.begin(KEYMAP_NAMESPACE, false)) {
-      persisted = prefs.putString(VOICE_ENGINE_KEY, s_voiceEngineDoubao ? "doubao" : "system") > 0;
+      persisted = prefs.putString(VOICE_ENGINE_KEY, s_voiceEngineThirdParty ? "third_party" : "system") > 0;
       prefs.end();
     }
     JsonDocument response;
     response["type"] = "voice_engine_response";
     response["ok"] = persisted;
-    response["engine"] = s_voiceEngineDoubao ? "doubao" : "system";
+    response["engine"] = s_voiceEngineThirdParty ? "third_party" : "system";
+    response["asr_provider"] = doc["asr_provider"] | "";
     response["persisted"] = persisted;
     serializeJson(response, output);
     output.println();
-    Serial.printf("[VOICE] engine -> %s\n", s_voiceEngineDoubao ? "doubao" : "system");
+    Serial.printf("[VOICE] engine -> %s\n", s_voiceEngineThirdParty ? "third_party" : "system");
     companionMarkSeen();
     return false;
   }

@@ -8,6 +8,33 @@ Transports:
 Messages are UTF-8 JSON Lines. Every JSON object is followed by `\n`.
 Unknown message `type` values must be ignored.
 
+## Communication Model
+
+```mermaid
+flowchart LR
+  Board[ESP32-S3 board<br/>screens + key state machine]
+  Companion[Companion app<br/>Tauri]
+  Host[macOS / Ghostty / Kiro]
+  Provider[3P ASR provider<br/>Doubao today, others later]
+
+  Board -- USB HID / BLE HID<br/>keyboard actions only --> Host
+  Board <-- USB CDC JSONL<br/>config, status, events --> Companion
+  Board <-- BLE GATT JSONL<br/>config, status, events --> Companion
+  Companion -- audio stream --> Provider
+  Provider -- transcript --> Companion
+  Companion -- paste / Enter / Backspace / Cmd+] --> Host
+```
+
+Transport responsibilities:
+
+- **USB HID / BLE HID**: keyboard output only (`Esc`, `Enter`, `Backspace`,
+  `Cmd+]`, configured shortcuts).
+- **USB CDC / BLE GATT**: bidirectional JSONL protocol for settings, key events,
+  agent state, pairing/auth, and voice state.
+- **Companion app**: owns third-party ASR providers and host text actions.
+- **Board firmware**: owns button state, screen rendering, and HID fallback when
+  the companion is unavailable.
+
 ## BLE GATT
 
 - Service UUID: `6b69726f-6b62-0001-8000-00805f9b34fb`
@@ -48,7 +75,7 @@ older companion builds and direct hook fallback.
 ## Board -> Companion
 
 ```json
-{"type":"button_event","key":"middle","action":"short","held_ms":121,"selected_agent":0,"companion_online":true}
+{"type":"button_event","key":"middle","action":"short","held_ms":121,"selected_agent":0,"companion_online":true,"voice_recording":false,"voice_editing":false,"voice_intent":"voice_start"}
 ```
 
 Fields:
@@ -58,12 +85,34 @@ Fields:
 - `held_ms`: press duration
 - `selected_agent`: current board-side selected agent index
 - `companion_online`: board-side heartbeat state before emitting this event
+- `voice_recording`: board-side voice recording state
+- `voice_editing`: board-side text-edit state
+- `voice_intent`: optional semantic action for the companion (`voice_start`,
+  `voice_commit_send`, `voice_commit_edit`, `voice_cancel`, `voice_send_edit`,
+  `voice_delete`, `voice_exit_edit`)
+
+Voice state machine:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Normal
+
+  Normal --> Recording: middle / mic
+  Recording --> Normal: middle / send\ntranscribe + paste + Enter
+  Recording --> Editing: left / stop\ntranscribe + paste
+  Recording --> Normal: right / cancel
+
+  Editing --> Normal: middle / send\nEnter
+  Editing --> Editing: right / Backspace\nshort once, hold repeat
+  Editing --> Normal: left / exit
+```
 
 ## Companion -> Board
 
 ```json
 {"type":"agent_state","agent_name":"planner","state":"running","session_id":"...","cwd":"..."}
 {"type":"voice_state","state":"recording"}
+{"type":"voice_engine","engine":"third_party","asr_provider":"doubao"}
 {"type":"get_keymap","request_id":"..."}
 {"type":"set_keymap","request_id":"...","keys":[{"label":"Voice","action_type":"voice","key":"Voice","modifiers":[]}]}
 ```
@@ -74,9 +123,17 @@ Board response:
 {"type":"keymap_response","request_id":"...","ok":true,"keys":[...]}
 ```
 
-`agent_state` is the existing Kiro hook display message. `voice_state` is reserved
-for voice UI updates; firmware may ignore it until a dedicated display behavior
-is added.
+`agent_state` is the existing Kiro hook display message. `voice_state` lets the
+companion reflect ASR lifecycle back to the board. `voice_engine` has two
+engine classes:
+
+- `system`: board owns macOS dictation HID.
+- `third_party`: companion owns recording, ASR provider calls, paste, Enter, and
+  Backspace. `asr_provider` is provider metadata for the companion and future
+  protocol consumers; the board state machine only needs the engine class.
+
+Firmware still accepts legacy `engine:"doubao"` as an alias for
+`engine:"third_party"` and persists the normalized `third_party` value.
 
 `get_keymap` and `set_keymap` are companion request/response messages. The board
 stores the JSON key tile configuration in NVS and returns `keymap_response`. In

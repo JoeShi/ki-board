@@ -87,7 +87,7 @@ ESP32-S3 开发板同时暴露两个 USB 串口，**用途完全不同**：
 - **hook 脚本现在支持自动发现 CDC 口**：通过匹配 VID=0x303A、PID=0x1001 和 product 字符串 "ki-board"，脚本无需手动指定 `--serial-port` 即可找到正确端口。
 - **`pio run --target upload --upload-port` 用 CH340 口** (`usbmodem5B901608471`)。
 - 两个口的 usbmodem 号**拔插后可能变化**，自动发现机制消除了这个问题。
-- pyserial 打开 CDC 口时必须 `dsrdtr=False, rtscts=False` 并显式 `port.dtr=False`，否则可能触发板子复位。
+- companion/调试脚本打开 ESP32-S3 原生 CDC 口时使用 `dsrdtr=False, rtscts=False`，并保持 `RTS=false`；当前固件需要主机置 `DTR=true` 才能可靠收发 Serial JSONL。
 
 ## 固件烧录 / OTA
 
@@ -180,3 +180,13 @@ python3 scripts/kiro_board_hook.py --agent-name planner
 **注意事项：**
 - `agentSpawn` 仅在 agent **首次启动**时触发一次，切换回已运行的 agent 不会重新触发。因此板子重启后，需要对该 agent **发一次消息**（触发 `userPromptSubmit`）才能让 tile 显示出来。
 - 多个 agent 几乎同时触发 hook 时可能串口冲突，脚本已内置 lockfile + 重试机制。
+
+## 测试与验证要求
+
+涉及 companion、固件协议、语音状态机、ASR provider、USB CDC/BLE GATT 通信的改动，必须在交付前运行对应验证，并在最终回复里说明结果：
+
+- companion 后端改动：运行 `cargo check --manifest-path companion/src-tauri/Cargo.toml`，有单元测试时运行 `cargo test --manifest-path companion/src-tauri/Cargo.toml`。
+- companion 前端或 Tauri 命令签名改动：运行 `npm run build`（在 `companion/` 目录）。
+- 固件改动：至少运行 `pio run -e esp32-s3-swap-key1-key3`；需要板子生效时再烧录 swap 固件。
+- 修改协议解析、设置迁移、voice intent、ASR provider 分派时，应补充或更新单元测试，避免只靠手动试验。
+- 如果因为硬件未连接、端口被占用、网络不可用等原因无法跑某项验证，必须明确说明未验证项和原因。

@@ -42,10 +42,16 @@ pub fn set_hid_output_payload(mode: &str) -> Value {
 }
 
 /// Tell the board which voice engine is active. In "system" mode the board
-/// drives macOS dictation itself (HID Control double-tap); in "doubao" mode the
-/// companion records and the board must not emit the dictation HID.
-pub fn voice_engine_payload(engine: &str) -> Value {
-    serde_json::json!({"type":"voice_engine","engine": engine})
+/// drives macOS dictation itself (HID Control double-tap); in "third_party" mode
+/// the companion records and the board must not emit voice-input HID. The ASR
+/// provider name is included for diagnostics and future protocol consumers; the
+/// board state machine only needs the engine class.
+pub fn voice_engine_payload(engine: &str, asr_provider: &str) -> Value {
+    serde_json::json!({
+        "type":"voice_engine",
+        "engine": engine,
+        "asr_provider": asr_provider,
+    })
 }
 
 pub fn legacy_ping_payload() -> Value {

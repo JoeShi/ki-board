@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 arboard = "3"
 base64 = "0.22"
 btleplug = "0.11"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 cpal = "0.15"
 flate2 = "1"
 futures-util = "0.3"

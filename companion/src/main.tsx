@@ -80,6 +80,7 @@ type Settings = {
   connection_mode: string;
   serial_port: string;
   ble_device_id: string;
+  paired_board_id: string;
   flash_port: string;
   doubao_endpoint: string;
   doubao_resource_id: string;
@@ -87,6 +88,7 @@ type Settings = {
   paste_after_transcribe: boolean;
   audio_input_device: string;
   voice_engine: string;
+  asr_provider: string;
 };
 
 type Status = {
@@ -129,17 +131,37 @@ type VoiceEvent = {
 };
 
 const defaultSettings: Settings = {
-  connection_mode: "auto",
+  connection_mode: "usb",
   serial_port: "",
   ble_device_id: "",
+  paired_board_id: "",
   flash_port: "",
   doubao_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   doubao_resource_id: "volc.bigasr.sauc.duration",
   doubao_language: "",
   paste_after_transcribe: true,
   audio_input_device: "",
-  voice_engine: "doubao",
+  voice_engine: "third_party",
+  asr_provider: "doubao",
 };
+
+function isThirdPartyVoice(settings: Settings) {
+  return settings.voice_engine === "third_party" || settings.voice_engine === "doubao";
+}
+
+function normalizeVoiceSettings(settings: Settings): Settings {
+  if (settings.voice_engine === "doubao") {
+    return {
+      ...settings,
+      voice_engine: "third_party",
+      asr_provider: settings.asr_provider || "doubao",
+    };
+  }
+  return {
+    ...settings,
+    asr_provider: settings.asr_provider || "doubao",
+  };
+}
 
 const defaultStatus: Status = {
   device_connected: false,
@@ -195,7 +217,7 @@ function App() {
   const flashPorts = useMemo(() => ports.filter((port) => port.kind === "flash-ch340" || port.kind === "usb-serial"), [ports]);
 
   async function loadSettings() {
-    setSettings(await invoke<Settings>("get_settings"));
+    setSettings(normalizeVoiceSettings(await invoke<Settings>("get_settings")));
   }
 
   async function refreshRuntime() {
@@ -219,10 +241,10 @@ function App() {
     }
   }
 
-  // Persist + sync the voice engine immediately (mirrors selectMode) so the
+  // Persist + sync the voice engine immediately so the
   // board learns whether to emit the system-dictation HID on the middle key.
   async function selectVoiceEngine(engine: string) {
-    const next = { ...settings, voice_engine: engine };
+    const next = normalizeVoiceSettings({ ...settings, voice_engine: engine });
     setSettings(next);
     await invoke("save_settings", { settings: next });
   }
@@ -310,7 +332,9 @@ function App() {
 
   async function saveSettings() {
     setUiError("");
-    await invoke("save_settings", { settings });
+    const next = normalizeVoiceSettings(settings);
+    setSettings(next);
+    await invoke("save_settings", { settings: next });
     if (apiKey.trim()) {
       await invoke("save_doubao_api_key", { apiKey });
       setApiKey("");
@@ -332,27 +356,14 @@ function App() {
     await refreshRuntime();
   }
 
-  // Persist the connection mode immediately so a later Refresh (which reloads
-  // settings from disk) doesn't revert the chip selection.
-  // Also tells the board which HID output to use (USB or BLE).
-  async function selectMode(mode: string) {
-    const next = { ...settings, connection_mode: mode };
-    setSettings(next);
-    await invoke("save_settings", { settings: next });
-    // Best-effort: if already connected, sync the HID output to the board.
-    if (status.device_connected) {
-      await invoke("set_hid_output", { mode: mode === "ble" ? "ble" : "usb" }).catch(() => {});
-    }
-  }
-
   async function startPairing() {
     setUiError("");
     setPairMessage("Requesting pairing… confirm on the board.");
     await invoke("start_pairing");
   }
 
-  // Pairing works over either transport (USB or BLE). Connect first using the
-  // current connection mode if needed, then send the pair request.
+  // Pairing works over either transport (USB or BLE). Connect first if needed,
+  // then send the pair request.
   async function pairFlow() {
     setUiError("");
     if (!status.device_connected) {
@@ -388,7 +399,7 @@ function App() {
     const saved = await invoke<boolean>("has_doubao_api_key");
     setHasApiKey(saved);
     if (!saved) {
-      throw new Error("Paste your Doubao X-Api-Key, then click Save Voice or Start again.");
+      throw new Error("Paste the Doubao provider X-Api-Key, then click Save Voice or Start again.");
     }
     await invoke("start_recording");
     await refresh();
@@ -474,7 +485,7 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <div className="eyebrow">USB CDC · BLE GATT · Doubao ASR · ESP32-S3</div>
+            <div className="eyebrow">USB CDC · BLE GATT · 3P ASR · ESP32-S3</div>
             <h2>{viewTitle(activeView)}</h2>
           </div>
           <div className={status.device_connected ? "status online" : "status"}>
@@ -485,7 +496,7 @@ function App() {
         <section className="lcd-grid">
           <div className="lcd">
             <span>LINK</span>
-            <strong>{status.device_connected ? `${status.transport.toUpperCase()} ${status.endpoint || status.serial_port}` : settings.connection_mode.toUpperCase()}</strong>
+            <strong>{status.device_connected ? `${status.transport.toUpperCase()} ${status.endpoint || status.serial_port}` : "DISCONNECTED"}</strong>
           </div>
           <div className="lcd">
             <span>VOICE</span>
@@ -501,79 +512,46 @@ function App() {
 
         {activeView === "device" && (
           <Panel title="Device Bridge">
-            <label>Connection mode</label>
-            <div className="chips">
-              <button
-                className={settings.connection_mode !== "ble" ? "chip active" : "chip"}
-                onClick={() => runAction(() => selectMode("usb"))}
-              >
-                USB
-              </button>
-              <button
-                className={settings.connection_mode === "ble" ? "chip active" : "chip"}
-                onClick={() => runAction(() => selectMode("ble"))}
-              >
-                Bluetooth
-              </button>
+            <label>Board USB port</label>
+            <select
+              value={settings.serial_port}
+              onChange={(event) => setSettings({ ...settings, serial_port: event.target.value })}
+            >
+              <option value="">Auto-detect ki-board</option>
+              {boardPorts.map((port) => (
+                <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
+              ))}
+            </select>
+            <p className="hint good-text">Connects via USB first, falls back to Bluetooth automatically.</p>
+            <div className="actions">
+              <button onClick={() => runAction(connect)}>Connect</button>
+              <button className="secondary" onClick={() => runAction(disconnect)}>Disconnect</button>
+              <button className="secondary" onClick={() => runAction(refresh)}>Refresh</button>
             </div>
 
-            {settings.connection_mode !== "ble" ? (
-              <>
-                <label>Board USB port</label>
-                <select
-                  value={settings.serial_port}
-                  onChange={(event) => setSettings({ ...settings, serial_port: event.target.value })}
-                >
-                  <option value="">Auto-detect ki-board</option>
-                  {boardPorts.map((port) => (
-                    <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
-                  ))}
-                </select>
-                <p className="hint good-text">USB is plug-and-play — no pairing needed.</p>
-                <div className="actions">
-                  <button onClick={() => runAction(connect)}>Connect</button>
-                  <button className="secondary" onClick={() => runAction(disconnect)}>Disconnect</button>
-                  <button className="secondary" onClick={() => runAction(refresh)}>Refresh</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <p className="hint">
-                  {status.paired
-                    ? "Connects to your paired Kiro board automatically and authenticates with the stored key."
-                    : "Not paired yet — use Pair below first. Connect unlocks once this Mac is authorized."}
-                </p>
-                <div className="actions">
-                  <button onClick={() => runAction(connect)} disabled={!status.paired}>Connect</button>
-                  <button className="secondary" onClick={() => runAction(disconnect)}>Disconnect</button>
-                  <button className="secondary" onClick={() => runAction(refresh)}>Refresh</button>
-                </div>
+            <div style={{ height: 1, background: "#2a2f3a", margin: "18px 0" }} />
 
-                <div style={{ height: 1, background: "#2a2f3a", margin: "18px 0" }} />
-
-                <label>Pairing</label>
-                <p className={status.paired ? "hint good-text" : "hint warn-text"}>
-                  {status.paired
-                    ? "BLE AUTHORIZED for this Mac"
-                    : "BLE NOT AUTHORIZED — pair to allow wireless access."}
-                </p>
-                <p className="hint">
-                  On the board, hold the <strong>left + right</strong> keys together for ~3s until a 6-digit
-                  code appears. Then click Pair, compare the code, and confirm on the board (● middle key).
-                </p>
-                <div className="actions">
-                  <button onClick={() => runAction(pairFlow)}>Pair</button>
-                  <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>Forget device</button>
-                </div>
-                {status.pairing_code && (
-                  <div style={{ marginTop: 12, padding: "12px 14px", background: "#10131a", border: "1px solid #07c2d6", borderRadius: 8 }}>
-                    <div style={{ color: "#aab", fontSize: 12 }}>Compare with the board, then press ● on the board:</div>
-                    <div style={{ fontFamily: "monospace", fontSize: 32, letterSpacing: 6, color: "#fff", marginTop: 4 }}>{status.pairing_code}</div>
-                  </div>
-                )}
-                {pairMessage && <p className="hint">{pairMessage}</p>}
-              </>
+            <label>BLE Pairing</label>
+            <p className={status.paired ? "hint good-text" : "hint warn-text"}>
+              {status.paired
+                ? "BLE AUTHORIZED for this Mac"
+                : "BLE NOT AUTHORIZED — pair to allow wireless access."}
+            </p>
+            <p className="hint">
+              On the board, hold the <strong>left + right</strong> keys together for ~3s until a 6-digit
+              code appears. Then click Pair, compare the code, and confirm on the board (● middle key).
+            </p>
+            <div className="actions">
+              <button onClick={() => runAction(pairFlow)}>Pair</button>
+              <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>Forget device</button>
+            </div>
+            {status.pairing_code && (
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "#10131a", border: "1px solid #07c2d6", borderRadius: 8 }}>
+                <div style={{ color: "#aab", fontSize: 12 }}>Compare with the board, then press ● on the board:</div>
+                <div style={{ fontFamily: "monospace", fontSize: 32, letterSpacing: 6, color: "#fff", marginTop: 4 }}>{status.pairing_code}</div>
+              </div>
             )}
+            {pairMessage && <p className="hint">{pairMessage}</p>}
           </Panel>
         )}
 
@@ -679,26 +657,33 @@ function App() {
             <label>Voice engine</label>
             <div className="chips">
               <button
-                className={settings.voice_engine !== "doubao" ? "chip active" : "chip"}
+                className={!isThirdPartyVoice(settings) ? "chip active" : "chip"}
                 onClick={() => runAction(() => selectVoiceEngine("system"))}
               >
                 System (HID)
               </button>
               <button
-                className={settings.voice_engine === "doubao" ? "chip active" : "chip"}
-                onClick={() => runAction(() => selectVoiceEngine("doubao"))}
+                className={isThirdPartyVoice(settings) ? "chip active" : "chip"}
+                onClick={() => runAction(() => selectVoiceEngine("third_party"))}
               >
-                Doubao ASR
+                3P ASR
               </button>
             </div>
             <p className="hint">
-              {settings.voice_engine === "doubao"
-                ? "Companion records the selected mic and streams to Doubao ASR, then pastes the transcript."
+              {isThirdPartyVoice(settings)
+                ? "Companion records the selected mic, sends audio to the selected ASR provider, then pastes the transcript."
                 : "The board triggers macOS dictation via the Control double-tap (HID). The companion does not record in this mode."}
             </p>
 
-            {settings.voice_engine === "doubao" ? (
+            {isThirdPartyVoice(settings) ? (
               <>
+                <label>ASR provider</label>
+                <select
+                  value={settings.asr_provider || "doubao"}
+                  onChange={(event) => setSettings(normalizeVoiceSettings({ ...settings, asr_provider: event.target.value }))}
+                >
+                  <option value="doubao">Doubao / Volcengine</option>
+                </select>
                 <label>Audio input device</label>
                 <select
                   value={settings.audio_input_device}
@@ -749,7 +734,7 @@ function App() {
                     <strong>{status.busy ? "TRANSCRIBING" : status.recording ? "LISTENING" : "READY"}</strong>
                   </div>
                   <div className="transcript-preview">
-                    {voiceText || "Click Start and speak to test Doubao transcription."}
+                    {voiceText || "Click Start and speak to test third-party ASR transcription."}
                   </div>
                   <div className="actions">
                     <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>Start</button>

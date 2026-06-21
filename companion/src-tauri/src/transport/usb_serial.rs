@@ -34,7 +34,10 @@ impl UsbSerialTransport {
             .timeout(Duration::from_millis(100))
             .open()
             .map_err(|err| format!("open serial port failed: {err}"))?;
-        let _ = port.write_data_terminal_ready(false);
+        // ESP32-S3 native USB CDC only starts delivering Serial traffic reliably
+        // after the host asserts DTR. Keep RTS low so opening the port does not
+        // enter a boot/download path.
+        let _ = port.write_data_terminal_ready(true);
         let _ = port.write_request_to_send(false);
 
         let reader = port

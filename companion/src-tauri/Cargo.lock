@@ -2408,6 +2408,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "btleplug",
+ "chrono",
  "core-foundation",
  "core-graphics 0.24.0",
  "cpal",
