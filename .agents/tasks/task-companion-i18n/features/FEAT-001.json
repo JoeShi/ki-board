@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Set up the i18n infrastructure with react-i18next, create English and Simplified Chinese translation files, extract all user-facing strings from main.tsx, add a language switcher in the sidebar, persist language preference in localStorage, and default to English.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Run npm install in companion/ to install existing dependencies, then install i18next, react-i18next, and i18next-browser-languagedetector as production dependencies",
     "Create companion/src/i18n/ directory with the following files: (a) index.ts - i18next initialization config with localStorage persistence and English as default/fallback language, (b) en.json - English translation file with all extracted strings, (c) zh-CN.json - Simplified Chinese translation file with all translated strings",
@@ -27,5 +27,5 @@
     "Verify no hardcoded English UI strings remain in main.tsx JSX by checking that all text in JSX uses t() calls"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "All hardcoded strings successfully extracted from main.tsx into en.json and zh-CN.json. The keys view panel (hidden from nav) was also translated. The viewTitle() helper function was removed since it was replaced by direct t() calls in JSX. dangerouslySetInnerHTML used for two strings containing HTML tags (pairHint and pairModal.matchHint). The i18n module exports the i18n instance for use in event handlers and other non-component code."
 }
