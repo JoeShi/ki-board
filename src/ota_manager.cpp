@@ -233,7 +233,7 @@ bool otaHandleCommand(const JsonDocument& request, Print& output) {
 }
 
 bool otaIsActive() {
-  return s_active;
+  return s_active || s_rebootPending;
 }
 
 uint8_t otaProgressPercent() {

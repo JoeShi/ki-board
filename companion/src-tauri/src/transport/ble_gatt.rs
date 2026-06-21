@@ -72,12 +72,10 @@ pub fn list_ble_devices() -> Result<Vec<BleDeviceInfo>, String> {
     runtime.block_on(async {
         let (_manager, adapter) = default_adapter().await?;
         adapter
-            .start_scan(ScanFilter {
-                services: vec![SERVICE_UUID],
-            })
+            .start_scan(ScanFilter::default())
             .await
             .map_err(|err| format!("BLE scan failed: {err}"))?;
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        tokio::time::sleep(Duration::from_millis(2000)).await;
         let peripherals = adapter
             .peripherals()
             .await
@@ -87,7 +85,12 @@ pub fn list_ble_devices() -> Result<Vec<BleDeviceInfo>, String> {
             let Ok(Some(props)) = peripheral.properties().await else {
                 continue;
             };
-            let name = props.local_name.unwrap_or_else(|| "Kiro KB".to_string());
+            let name = props.local_name.unwrap_or_default();
+            let has_kiro_service = props.services.contains(&SERVICE_UUID);
+            if !name.starts_with("Kiro") && !has_kiro_service {
+                continue;
+            }
+            let label = if name.is_empty() { "Kiro KB".to_string() } else { name };
             let raw_address = props.address.to_string();
             let address = if raw_address == "00:00:00:00:00:00" {
                 peripheral.id().to_string()
@@ -96,7 +99,7 @@ pub fn list_ble_devices() -> Result<Vec<BleDeviceInfo>, String> {
             };
             devices.push(BleDeviceInfo {
                 id: peripheral.id().to_string(),
-                name,
+                name: label,
                 address,
             });
         }
@@ -108,13 +111,14 @@ async fn find_peripheral(
     device_id: Option<String>,
 ) -> Result<(Manager, btleplug::platform::Adapter, Peripheral, String), String> {
     let (manager, adapter) = default_adapter().await?;
+    // Use an empty scan filter so CoreBluetooth also returns peripherals that
+    // are already connected (e.g. via HID). A service-UUID filter causes macOS
+    // to skip already-connected devices.
     adapter
-        .start_scan(ScanFilter {
-            services: vec![SERVICE_UUID],
-        })
+        .start_scan(ScanFilter::default())
         .await
         .map_err(|err| format!("BLE scan failed: {err}"))?;
-    tokio::time::sleep(Duration::from_millis(1500)).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
 
     let peripherals = adapter
         .peripherals()
@@ -132,8 +136,17 @@ async fn find_peripheral(
         let name = props
             .as_ref()
             .and_then(|props| props.local_name.clone())
-            .unwrap_or_else(|| "Kiro KB".to_string());
-        return Ok((manager, adapter, peripheral, format!("{name} ({id})")));
+            .unwrap_or_default();
+        // Match by name prefix or by advertised Kiro service UUID.
+        let has_kiro_service = props
+            .as_ref()
+            .map(|p| p.services.contains(&SERVICE_UUID))
+            .unwrap_or(false);
+        if !name.starts_with("Kiro") && !has_kiro_service {
+            continue;
+        }
+        let label = if name.is_empty() { "Kiro KB".to_string() } else { name };
+        return Ok((manager, adapter, peripheral, format!("{label} ({id})")));
     }
     Err("ki-board BLE GATT device not found".to_string())
 }

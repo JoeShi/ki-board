@@ -117,8 +117,9 @@ static void emitButtonEventWithAction(LogicalKey key, const char* action, unsign
     voiceEditing ? "true" : "false",
     voiceIntent
   );
-  Serial.println(line);
-  bleGattCommSendLine(line);
+  CompanionChannel ch = companionActiveChannel();
+  if (ch != CHANNEL_BLE) Serial.println(line);
+  if (ch != CHANNEL_USB) bleGattCommSendLine(line);
 }
 
 static void drawKey(LogicalKey key) {
@@ -172,7 +173,7 @@ static void refreshUi() {
     drawOtaRect(rectDisplay(), otaPhase(), otaProgressPercent());
     for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
       Arduino_GFX* g = selectLogicalScreen(static_cast<LogicalKey>(i));
-      drawEscIcon(g, "WAIT");
+      g->fillScreen(0x0000);
       deselectScreenKeys();
     }
     return;
@@ -195,7 +196,9 @@ static void refreshUi() {
   }
   drawAllKeys();
   drawRectMetadata(rectDisplay(), agentSlots, selectedAgent, voiceRecording, voiceEditing);
-  drawWifiStatusBar(rectDisplay(), wifiModeLabel(), wifiIpAddress(), wifiApSsid(), wifiApPassword());
+  const char* ch = companionActiveChannel() == CHANNEL_BLE ? "BLE" :
+                   companionActiveChannel() == CHANNEL_USB ? "USB" : "-";
+  drawDeviceStatusBar(rectDisplay(), "0.2.0", bleGattCommDeviceName(), ch, companionIsOnline());
   drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, true);
 }
 
@@ -499,7 +502,7 @@ static void pollButtons() {
   }
 }
 
-static void pollWifiStatusUi(unsigned long now) {
+static void pollStatusBarUi(unsigned long now) {
   if (pairingPhase() == PAIRING_PAIRING || otaIsActive()) {
     return;
   }
@@ -507,7 +510,9 @@ static void pollWifiStatusUi(unsigned long now) {
     return;
   }
   lastWifiStatusMs = now;
-  drawWifiStatusBar(rectDisplay(), wifiModeLabel(), wifiIpAddress(), wifiApSsid(), wifiApPassword());
+  const char* ch = companionActiveChannel() == CHANNEL_BLE ? "BLE" :
+                   companionActiveChannel() == CHANNEL_USB ? "USB" : "-";
+  drawDeviceStatusBar(rectDisplay(), "0.2.0", bleGattCommDeviceName(), ch, companionIsOnline());
 }
 
 static void pollBleStatus(unsigned long now) {
@@ -524,7 +529,9 @@ static void pollBleStatus(unsigned long now) {
     selectedAgent,
     companionIsOnline() ? "true" : "false"
   );
-  bleGattCommSendLine(line);
+  CompanionChannel ch = companionActiveChannel();
+  if (ch != CHANNEL_BLE) Serial.println(line);
+  if (ch != CHANNEL_USB) bleGattCommSendLine(line);
 }
 
 static void pollOtaUi(unsigned long now) {
@@ -561,6 +568,7 @@ void setup() {
   refreshUi();
 
   Serial.println("Kiro KB ready (5-screen agent controller)");
+  Serial.printf("  Firmware v%d.%d.%d\n", FW_VERSION_MAJOR, FW_VERSION_MINOR, FW_VERSION_PATCH);
   printKeyWiring();
 }
 
@@ -582,7 +590,7 @@ void loop() {
   }
   otaLoop();
   pollOtaUi(now);
-  pollWifiStatusUi(now);
+  pollStatusBarUi(now);
   pollBleStatus(now);
   pollButtons();
 }

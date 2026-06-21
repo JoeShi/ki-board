@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
+import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import "./styles.css";
 
@@ -77,11 +78,9 @@ listen("voice-recording-stop", () => {
 });
 
 type Settings = {
-  connection_mode: string;
   serial_port: string;
   ble_device_id: string;
   paired_board_id: string;
-  flash_port: string;
   doubao_endpoint: string;
   doubao_resource_id: string;
   doubao_language: string;
@@ -131,11 +130,9 @@ type VoiceEvent = {
 };
 
 const defaultSettings: Settings = {
-  connection_mode: "usb",
   serial_port: "",
   ble_device_id: "",
   paired_board_id: "",
-  flash_port: "",
   doubao_endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
   doubao_resource_id: "volc.bigasr.sauc.duration",
   doubao_language: "",
@@ -205,7 +202,6 @@ function App() {
   const [keys, setKeys] = useState<KeyBinding[]>(fallbackKeys);
   const [firmwarePath, setFirmwarePath] = useState("");
   const [flashOutput, setFlashOutput] = useState("");
-  const [otaTransportMode, setOtaTransportMode] = useState("current");
   const [activeView, setActiveView] = useState("device");
   const [uiError, setUiError] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -214,7 +210,6 @@ function App() {
   const [voiceText, setVoiceText] = useState("");
 
   const boardPorts = useMemo(() => ports.filter((port) => port.kind !== "flash-ch340"), [ports]);
-  const flashPorts = useMemo(() => ports.filter((port) => port.kind === "flash-ch340" || port.kind === "usb-serial"), [ports]);
 
   async function loadSettings() {
     setSettings(normalizeVoiceSettings(await invoke<Settings>("get_settings")));
@@ -417,22 +412,14 @@ function App() {
     await refresh();
   }
 
-  async function flashFirmware() {
-    setUiError("");
-    setFlashOutput("");
-    const output = await invoke<string>("flash_firmware", {
-      firmwarePath,
-      portName: settings.flash_port || null,
-    });
-    setFlashOutput(output);
-  }
+
 
   async function otaFlashFirmware() {
     setUiError("");
     setFlashOutput("");
     const output = await invoke<string>("ota_flash_firmware", {
       firmwarePath,
-      transportMode: otaTransportMode,
+      transportMode: "current",
     });
     setFlashOutput(output);
     await refreshRuntime();
@@ -471,7 +458,7 @@ function App() {
             <p>Pixel companion</p>
           </div>
         </div>
-        {["device", "keys", "flash", "voice", "logs"].map((view) => (
+        {["device", "flash", "voice", "logs"].map((view) => (
           <button
             key={view}
             className={activeView === view ? "nav active" : "nav"}
@@ -598,53 +585,25 @@ function App() {
 
         {activeView === "flash" && (
           <Panel title="Firmware Flash">
-            <label>Firmware .bin path</label>
-            <input
-              value={firmwarePath}
-              onChange={(event) => setFirmwarePath(event.target.value)}
-              placeholder="/absolute/path/to/firmware.bin"
-            />
+            <label>Firmware .bin file</label>
+            <div className="actions">
+              <button onClick={async () => {
+                const file = await open({ multiple: false, filters: [{ name: "Firmware", extensions: ["bin"] }] });
+                if (file) setFirmwarePath(file);
+              }}>Select File…</button>
+              <span style={{ fontSize: "0.85em", opacity: 0.7 }}>{firmwarePath || "No file selected"}</span>
+            </div>
 
             <div className="test-box">
               <div className="test-head">
                 <span>OTA FLASH</span>
                 <strong>{status.device_connected ? status.transport.toUpperCase() : "OFFLINE"}</strong>
               </div>
-              <label>Transport</label>
-              <select value={otaTransportMode} onChange={(event) => setOtaTransportMode(event.target.value)}>
-                <option value="current">Current connection</option>
-                <option value="usb">USB CDC</option>
-                <option value="ble">BLE GATT</option>
-              </select>
               <p className="hint">
-                OTA uses the current board protocol. USB is fastest; BLE requires pairing and is slower.
+                OTA uses the current board connection. USB is fastest; BLE requires pairing and is slower.
               </p>
               <div className="actions">
-                <button onClick={() => runAction(otaFlashFirmware)} disabled={!firmwarePath.trim()}>OTA Flash</button>
-              </div>
-            </div>
-
-            <div className="test-box">
-              <div className="test-head">
-                <span>RECOVERY FLASH</span>
-                <strong>CH340</strong>
-              </div>
-              <label>CH340 flash port</label>
-              <select
-                value={settings.flash_port}
-                onChange={(event) => setSettings({ ...settings, flash_port: event.target.value })}
-              >
-                <option value="">Auto-detect CH340</option>
-                {flashPorts.map((port) => (
-                  <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
-                ))}
-              </select>
-              <p className="hint">
-                Use this only for development or recovery when OTA is unavailable.
-              </p>
-              <div className="actions">
-                <button className="secondary" onClick={() => runAction(flashFirmware)} disabled={!firmwarePath.trim()}>CH340 Flash</button>
-                <button className="secondary" onClick={() => runAction(saveSettings)}>Save Port</button>
+                <button onClick={() => runAction(otaFlashFirmware)} disabled={!firmwarePath.trim() || !status.device_connected}>OTA Flash</button>
               </div>
             </div>
 
@@ -824,7 +783,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 
 function viewTitle(view: string) {
   switch (view) {
-    case "keys": return "Key Configuration";
     case "flash": return "Firmware Flasher";
     case "voice": return "Voice Console";
     case "logs": return "Event Stream";

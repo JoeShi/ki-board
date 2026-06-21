@@ -32,7 +32,6 @@ use flate2::read::GzDecoder;
 
 const KEYRING_SERVICE: &str = "kiro-keyboard-companion";
 const KEYRING_BLE_TOKEN: &str = "ble-pairing-token";
-const KEYRING_DOUBAO_API_KEY: &str = "doubao-api-key";
 const HOOK_ADDR: &str = "127.0.0.1:47218";
 // Two-way streaming, optimized variant (bigmodel_async). It only emits a new
 // packet when the recognition result changes, with lower first/last-word
@@ -47,8 +46,7 @@ const OTA_CHUNK_BYTES: usize = 512;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Settings {
-    #[serde(default = "default_connection_mode")]
-    connection_mode: String,
+    #[serde(default)]
     serial_port: String,
     #[serde(default)]
     ble_device_id: String,
@@ -75,7 +73,6 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            connection_mode: default_connection_mode(),
             serial_port: String::new(),
             ble_device_id: String::new(),
             paired_board_id: String::new(),
@@ -90,10 +87,6 @@ impl Default for Settings {
             asr_provider: default_asr_provider(),
         }
     }
-}
-
-fn default_connection_mode() -> String {
-    "auto".to_string()
 }
 
 fn default_voice_engine() -> String {
@@ -179,13 +172,13 @@ struct RecordingHandle {
 
 struct AppStateInner {
     settings: Settings,
-    doubao_api_key_cache: Option<String>,
     logs: Vec<String>,
     transport: Option<Box<dyn BoardTransport>>,
     transport_kind: TransportKind,
     endpoint: String,
     device_name: String,
     connection_id: u64,
+    missed_pongs: u8,
     recording: Option<RecordingHandle>,
     busy: bool,
     authenticated: bool,
@@ -221,13 +214,6 @@ fn load_settings(app: &AppHandle) -> Settings {
     };
     let mut settings: Settings = serde_json::from_str(&raw).unwrap_or_default();
     normalize_voice_settings(&mut settings);
-    if !settings.doubao_api_key_file.trim().is_empty() {
-        if let Ok(entry) = Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY) {
-            let _ = entry.set_password(&settings.doubao_api_key_file);
-        }
-        settings.doubao_api_key_file.clear();
-        let _ = save_settings_to_disk(app, &settings);
-    }
     settings
 }
 
@@ -369,27 +355,9 @@ fn clear_ble_token() {
 }
 
 fn get_doubao_api_key(state: &SharedState) -> Option<String> {
-    if let Ok(value) = Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
-        .and_then(|entry| entry.get_password())
-    {
-        if !value.trim().is_empty() {
-            return Some(value);
-        }
-    }
-
     let inner = state.inner.lock().ok()?;
-    inner
-        .doubao_api_key_cache
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            let value = inner.settings.doubao_api_key_file.clone();
-            if value.trim().is_empty() {
-                None
-            } else {
-                Some(value)
-            }
-        })
+    let value = inner.settings.doubao_api_key_file.clone();
+    if value.trim().is_empty() { None } else { Some(value) }
 }
 
 fn board_request(
@@ -537,6 +505,17 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
             return;
         }
         _ => {}
+    }
+    if message_type == "pong" {
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.missed_pongs = 0;
+        }
+        return;
+    }
+    if message_type == "hello_ack" {
+        let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("-");
+        log_event(app, "INFO", "board", "rx", format!("hello_ack channel={channel}"));
+        return;
     }
     if message_type != "button_event" {
         // Suppress routine heartbeat/status chatter from the log so it stays
@@ -718,16 +697,13 @@ fn save_settings(
 
 #[tauri::command]
 fn save_doubao_api_key(app: AppHandle, state: State<SharedState>, api_key: String) -> Result<(), String> {
-    state
-        .inner
-        .lock()
-        .map_err(|_| "state lock poisoned")?
-        .doubao_api_key_cache = Some(api_key.clone());
-    Entry::new(KEYRING_SERVICE, KEYRING_DOUBAO_API_KEY)
-        .map_err(|err| format!("keyring unavailable: {err}"))?
-        .set_password(&api_key)
-        .map_err(|err| format!("keyring save failed: {err}"))?;
-    log_event(&app, "INFO", "config", "keyring", "saved Doubao API key");
+    {
+        let mut inner = state.inner.lock().map_err(|_| "state lock poisoned")?;
+        inner.settings.doubao_api_key_file = api_key.clone();
+    }
+    let settings = state.inner.lock().map_err(|_| "state lock poisoned")?.settings.clone();
+    save_settings_to_disk(&app, &settings)?;
+    log_event(&app, "INFO", "config", "-", "saved Doubao API key");
     Ok(())
 }
 
@@ -856,13 +832,7 @@ fn connect_device_inner(
     }
     let (line_tx, line_rx) = mpsc::channel::<String>();
     let transport: Box<dyn BoardTransport> =
-        match settings.connection_mode.as_str() {
-            "usb" => Box::new(UsbSerialTransport::connect(selected_port.clone(), line_tx.clone())?),
-            "ble" => Box::new(BleGattTransport::connect(
-                non_empty(settings.ble_device_id.clone()),
-                line_tx,
-            )?),
-            _ => match UsbSerialTransport::connect(selected_port.clone(), line_tx.clone()) {
+        match UsbSerialTransport::connect(selected_port.clone(), line_tx.clone()) {
             Ok(t) => Box::new(t),
             Err(usb_err) => {
                 log_error(&app, "transport", "usb", format!("auto-connect failed: {usb_err}"));
@@ -871,7 +841,6 @@ fn connect_device_inner(
                     line_tx,
                 )?)
             }
-            },
         };
     let kind = transport.kind();
     let endpoint = transport.endpoint();
@@ -891,6 +860,7 @@ fn connect_device_inner(
         };
         inner.transport = Some(transport);
         inner.last_error.clear();
+        inner.missed_pongs = 0;
     }
 
     let shared = state.clone();
@@ -922,7 +892,6 @@ fn connect_device_inner(
     let hid_mode = if kind == TransportKind::Ble { "ble" } else { "usb" };
     let _ = write_board_json_from_arc(&shared, &protocol::set_hid_output_payload(hid_mode));
     spawn_board_reader(app.clone(), shared.clone(), line_rx, connection_id);
-    spawn_companion_ping(shared);
     let channel = match kind {
         TransportKind::Usb => "usb",
         TransportKind::Ble => "ble",
@@ -1013,21 +982,76 @@ fn spawn_board_reader(
     });
 }
 
-fn spawn_companion_ping(state: SharedState) {
+fn spawn_connection_manager(app: AppHandle, state: SharedState) {
     thread::spawn(move || loop {
-        // Heartbeat every 5s. Must stay below the board's companion-online grace
-        // window (COMPANION_ONLINE_GRACE_MS) so the board keeps us marked online.
         thread::sleep(Duration::from_millis(5000));
         let connected = state
             .inner
             .lock()
             .map(|inner| inner.transport.is_some())
             .unwrap_or(false);
+
         if !connected {
-            break;
+            match connect_device_inner(&app, &state, None) {
+                Ok(()) => {
+                    log_event(&app, "INFO", "transport", "-", "auto-connected");
+                    // Reset pong counter for fresh connection.
+                    if let Ok(mut inner) = state.inner.lock() {
+                        inner.missed_pongs = 0;
+                    }
+                }
+                Err(err) => {
+                    log_error(&app, "transport", "auto", format!("auto-connect failed: {err}"));
+                }
+            }
+            continue;
         }
+
+        // Connected — do heartbeat.
+        let kind = state
+            .inner
+            .lock()
+            .map(|inner| inner.transport_kind)
+            .unwrap_or(TransportKind::None);
+
+        // Send ping first, then increment missed counter.
         let _ = write_board_json_from_arc(&state, &protocol::ping_payload());
         let _ = write_board_json_from_arc(&state, &protocol::legacy_ping_payload());
+
+        // Wait a moment for pong to arrive and reset the counter.
+        thread::sleep(Duration::from_millis(2000));
+
+        let missed = state
+            .inner
+            .lock()
+            .map(|inner| inner.missed_pongs)
+            .unwrap_or(0);
+
+        if missed >= 3 {
+            log_event(&app, "WARN", "ping", "-", "3 pongs missed, disconnecting");
+            if let Ok(mut inner) = state.inner.lock() {
+                if let Some(mut transport) = inner.transport.take() {
+                    transport.disconnect();
+                }
+                inner.transport_kind = TransportKind::None;
+                inner.endpoint.clear();
+                inner.device_name.clear();
+                inner.missed_pongs = 0;
+            }
+            continue;
+        }
+
+        // Increment missed_pongs; will be reset to 0 when pong arrives.
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.missed_pongs = inner.missed_pongs.saturating_add(1);
+        }
+
+        let channel = match kind {
+            TransportKind::Usb => "usb",
+            TransportKind::Ble => "ble",
+            TransportKind::None => "-",
+        };
+        log_event(&app, "DEBUG", "ping", channel, "heartbeat sent");
     });
 }
 
@@ -2078,18 +2102,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let settings = load_settings(app.handle());
             let state = Arc::new(AppState {
                 inner: Mutex::new(AppStateInner {
                     settings,
-                    doubao_api_key_cache: None,
                     logs: Vec::new(),
                     transport: None,
                     transport_kind: TransportKind::None,
                     endpoint: String::new(),
                     device_name: String::new(),
                     connection_id: 0,
+                    missed_pongs: 0,
                     recording: None,
                     busy: false,
                     authenticated: false,
@@ -2101,7 +2126,8 @@ pub fn run() {
                 }),
             });
             spawn_hook_server(app.handle().clone(), state.clone());
-            app.manage(state);
+            app.manage(state.clone());
+            spawn_connection_manager(app.handle().clone(), state);
 
             // Tray icon — app lives in the menu bar, not the Dock.
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -2213,13 +2239,13 @@ mod tests {
         Arc::new(AppState {
                 inner: Mutex::new(AppStateInner {
                     settings: Settings::default(),
-                    doubao_api_key_cache: None,
                     logs: Vec::new(),
                     transport: None,
                     transport_kind: TransportKind::None,
                     endpoint: String::new(),
                     device_name: String::new(),
                     connection_id: 0,
+                    missed_pongs: 0,
                     recording: Some(RecordingHandle {
                         stop_tx,
                         done_rx,

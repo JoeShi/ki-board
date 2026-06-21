@@ -203,33 +203,23 @@ void drawRectMetadata(Arduino_GFX& rectLcd, const AgentSlot* slots,
   drawAgentTile(rectLcd, slots, selectedAgent, voiceRecording, voiceEditing, 3, rightX, bottomY, tileW, tileH);
 }
 
-void drawWifiStatusBar(Arduino_GFX& rectLcd, const String& mode,
-                       const String& ip, const String& apSsid,
-                       const String& apPassword) {
+void drawDeviceStatusBar(Arduino_GFX& rectLcd, const char* fwVersion,
+                         const char* deviceName, const char* channel,
+                         bool companionOnline) {
   const int y = rectLcd.height() - 18;
   rectLcd.fillRect(0, y, rectLcd.width(), 18, 0x0000);
   rectLcd.drawFastHLine(0, y, rectLcd.width(), 0x2945);
   rectLcd.setTextSize(1);
-  rectLcd.setTextColor(mode == "AP" ? 0xFFE0 : 0x07FF);
+  rectLcd.setTextColor(companionOnline ? 0x07E0 : 0x8410);
   rectLcd.setCursor(6, y + 5);
-
-  if (mode == "AP") {
-    rectLcd.print(apSsid);
-    rectLcd.print(" ");
-    rectLcd.print(apPassword);
-    rectLcd.print(" 192.168.4.1");
-    return;
-  }
-
-  rectLcd.print("WiFi ");
-  rectLcd.print(mode);
-  if (ip.length() > 0) {
-    rectLcd.print(" ");
-    rectLcd.print(ip);
-  }
-  if (mode == "STA") {
-    rectLcd.print(" kirokb.local");
-  }
+  rectLcd.print("v");
+  rectLcd.print(fwVersion);
+  rectLcd.print(" ");
+  rectLcd.print(deviceName);
+  rectLcd.print(" ");
+  rectLcd.print(channel);
+  rectLcd.print(" ");
+  rectLcd.print(companionOnline ? "ON" : "OFF");
 }
 
 void drawExprFrame(Arduino_GFX& roundLcd, AgentState selectedState,
@@ -288,6 +278,7 @@ void drawOtaRound(Arduino_GFX* g, uint8_t progress) {
 void drawOtaRect(Arduino_GFX& rectLcd, const char* phase, uint8_t progress) {
   const uint16_t violet = 0x781F;
   const uint16_t cyan = 0x07FF;
+  const uint16_t yellow = 0xFFE0;
   rectLcd.fillScreen(0x0000);
   drawCenteredText(&rectLcd, "Firmware Update", 16, 2, violet);
   rectLcd.setTextSize(2);
@@ -301,8 +292,5 @@ void drawOtaRect(Arduino_GFX& rectLcd, const char* phase, uint8_t progress) {
   rectLcd.drawRect(barX, barY, barW, barH, cyan);
   int fillW = ((barW - 4) * progress) / 100;
   rectLcd.fillRect(barX + 2, barY + 2, fillW, barH - 4, cyan);
-  char pct[8];
-  snprintf(pct, sizeof(pct), "%u%%", progress);
-  drawCenteredText(&rectLcd, pct, 138, 2, 0xFFFF);
-  drawCenteredText(&rectLcd, "Do not disconnect", rectLcd.height() - 24, 1, 0xFFE0);
+  drawCenteredText(&rectLcd, "Do not disconnect", rectLcd.height() - 24, 1, yellow);
 }

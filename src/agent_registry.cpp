@@ -11,6 +11,7 @@
 // does not flap the companion between online/offline between heartbeats.
 static constexpr unsigned long COMPANION_ONLINE_GRACE_MS = 8000;
 static unsigned long s_companionLastSeenMs = 0;
+static CompanionChannel s_activeChannel = CHANNEL_NONE;
 // Voice engine selected by the companion. When false (default) the board owns
 // dictation and emits the macOS Control double-tap on the middle key. In
 // third-party ASR mode the companion records, transcribes, and performs text
@@ -76,6 +77,14 @@ bool companionIsOnline() {
 
 bool voiceEngineIsThirdParty() {
   return s_voiceEngineThirdParty;
+}
+
+CompanionChannel companionActiveChannel() {
+  return s_activeChannel;
+}
+
+void companionSetChannel(CompanionChannel ch) {
+  s_activeChannel = ch;
 }
 
 static uint8_t findAgentSlotByName(const AgentSlot* slots, const char* name) {
@@ -148,7 +157,7 @@ static bool applyRegistryEvent(AgentSlot* slots, uint8_t& selectedAgent,
   return true;
 }
 
-bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output) {
+bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& selectedAgent, Print& output, CompanionChannel channel) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, line);
   if (err) {
@@ -157,10 +166,12 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
 
   const char* type = doc["type"] | "";
   if (strcmp(type, "hello") == 0 || strcmp(type, "companion_hello") == 0) {
+    s_activeChannel = channel;
     JsonDocument response;
     response["type"] = "hello_ack";
     response["protocol"] = 1;
     response["fw"] = "0.2.0";
+    response["channel"] = (channel == CHANNEL_BLE) ? "ble" : "usb";
     JsonArray capabilities = response["capabilities"].to<JsonArray>();
     capabilities.add("usb_cdc");
     capabilities.add("ble_gatt");
@@ -179,6 +190,7 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
     JsonDocument response;
     response["type"] = "pong";
     response["protocol"] = 1;
+    response["channel"] = (s_activeChannel == CHANNEL_BLE) ? "ble" : "usb";
     serializeJson(response, output);
     output.println();
     companionMarkSeen();
@@ -328,7 +340,7 @@ bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selected
       line[len] = '\0';
       if (len > 0 && line[0] == '{') {
         if (pairingHandleLine(line, serial, PAIR_TRANSPORT_USB) == PAIR_LINE_FORWARD) {
-          changed = handleAgentRegistryLine(line, slots, selectedAgent, serial) || changed;
+          changed = handleAgentRegistryLine(line, slots, selectedAgent, serial, CHANNEL_USB) || changed;
         }
       }
       len = 0;

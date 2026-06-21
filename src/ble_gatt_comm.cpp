@@ -14,6 +14,7 @@ static NimBLEServer* s_server = nullptr;
 static NimBLECharacteristic* s_tx = nullptr;
 static String s_rxBuffer;
 static String s_boardId;
+static char s_deviceName[16] = "Kiro KB";
 static BleGattLineHandler s_handler = nullptr;
 static AgentSlot* s_slots = nullptr;
 static uint8_t* s_selectedAgent = nullptr;
@@ -79,7 +80,7 @@ static void handleRxByte(char ch) {
       // Pairing/auth gate runs first; only forward non-privileged or
       // authenticated lines to the normal handler.
       if (pairingHandleLine(s_rxBuffer.c_str(), s_blePrint, PAIR_TRANSPORT_BLE) == PAIR_LINE_FORWARD) {
-        s_handler(s_rxBuffer.c_str(), s_slots, *s_selectedAgent, s_blePrint);
+        s_handler(s_rxBuffer.c_str(), s_slots, *s_selectedAgent, s_blePrint, CHANNEL_BLE);
       }
     }
     s_rxBuffer = "";
@@ -128,8 +129,22 @@ void bleGattCommBegin(BleGattLineHandler handler) {
   NimBLEDevice::setMTU(185);
   s_boardId = NimBLEDevice::getAddress().toString().c_str();
 
+  // Build a unique device name from MAC suffix (e.g. "Kiro-A3F2").
+  String addr = NimBLEDevice::getAddress().toString().c_str();
+  // addr format: "xx:xx:xx:xx:xx:xx" — use last 2 octets
+  size_t alen = addr.length();
+  if (alen >= 5) {
+    char h1 = addr[alen - 5];
+    char h2 = addr[alen - 4];
+    char h3 = addr[alen - 2];
+    char h4 = addr[alen - 1];
+    snprintf(s_deviceName, sizeof(s_deviceName), "Kiro-%c%c%c%c", h1, h2, h3, h4);
+  }
+  NimBLEDevice::setDeviceName(s_deviceName);
+
   s_server = NimBLEDevice::createServer();
   s_server->setCallbacks(new KiroServerCallbacks(), true); // true = append, don't replace
+  s_server->advertiseOnDisconnect(true);
 
   NimBLEService* service = s_server->createService(SERVICE_UUID);
   s_tx = service->createCharacteristic(TX_UUID, NIMBLE_PROPERTY::NOTIFY);
@@ -170,4 +185,8 @@ bool bleGattCommConnected() {
 
 const char* bleGattCommBoardId() {
   return s_boardId.c_str();
+}
+
+const char* bleGattCommDeviceName() {
+  return s_deviceName;
 }
