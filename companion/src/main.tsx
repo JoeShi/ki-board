@@ -817,4 +817,8 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <React.Suspense fallback={<div />}>
+    <App />
+  </React.Suspense>
+);
