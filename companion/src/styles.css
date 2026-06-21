@@ -127,10 +127,21 @@ label {
   border-right: 3px solid var(--border-strong);
   background: var(--sidebar);
   padding: 18px;
-  /* Keep the sidebar fixed while the content area scrolls independently.
-     overflow-y guards against the nav itself overflowing on short viewports. */
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
   overflow-y: auto;
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.sidebar-footer p {
+  margin: 2px 0;
 }
 
 .brand {
@@ -141,16 +152,11 @@ label {
   margin-bottom: 24px;
 }
 
-.ghost {
-  display: grid;
-  place-items: center;
+.brand-logo {
   width: 52px;
   height: 52px;
-  border: 3px solid var(--accent-hover);
-  background: var(--panel-2);
-  color: var(--text);
-  font-weight: 700;
-  box-shadow: 4px 4px 0 var(--shadow);
+  border-radius: 8px;
+  object-fit: contain;
 }
 
 h1,
@@ -221,7 +227,7 @@ h2 {
 
 .lcd-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 2fr;
+  grid-template-columns: repeat(4, 1fr);
   gap: 12px;
   margin-bottom: 16px;
 }

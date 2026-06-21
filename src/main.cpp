@@ -19,6 +19,10 @@
 #include "ui_render.h"
 #include "wifi_config.h"
 
+#define _STR(x) #x
+#define STR(x) _STR(x)
+#define FW_VERSION_STR STR(FW_VERSION_MAJOR) "." STR(FW_VERSION_MINOR) "." STR(FW_VERSION_PATCH)
+
 static constexpr uint16_t DEBOUNCE_MS = 35;
 static constexpr uint16_t LONG_PRESS_MS = 700;
 static constexpr uint16_t BACKSPACE_REPEAT_MS = 120;
@@ -198,7 +202,7 @@ static void refreshUi() {
   drawRectMetadata(rectDisplay(), agentSlots, selectedAgent, voiceRecording, voiceEditing);
   const char* ch = companionActiveChannel() == CHANNEL_BLE ? "BLE" :
                    companionActiveChannel() == CHANNEL_USB ? "USB" : "-";
-  drawDeviceStatusBar(rectDisplay(), "0.2.0", bleGattCommDeviceName(), ch, companionIsOnline());
+  drawDeviceStatusBar(rectDisplay(), FW_VERSION_STR, bleGattCommDeviceName(), ch, companionIsOnline());
   drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, true);
 }
 
@@ -512,7 +516,7 @@ static void pollStatusBarUi(unsigned long now) {
   lastWifiStatusMs = now;
   const char* ch = companionActiveChannel() == CHANNEL_BLE ? "BLE" :
                    companionActiveChannel() == CHANNEL_USB ? "USB" : "-";
-  drawDeviceStatusBar(rectDisplay(), "0.2.0", bleGattCommDeviceName(), ch, companionIsOnline());
+  drawDeviceStatusBar(rectDisplay(), FW_VERSION_STR, bleGattCommDeviceName(), ch, companionIsOnline());
 }
 
 static void pollBleStatus(unsigned long now) {
@@ -548,6 +552,7 @@ static void pollOtaUi(unsigned long now) {
 }
 
 void setup() {
+  Serial.setRxBufferSize(4096);
   Serial.begin(115200);
 
   agentRegistryBegin();
@@ -574,9 +579,20 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  // During OTA, minimize other work and drain serial aggressively.
+  if (otaIsActive()) {
+    if (pollAgentRegistrySerial(Serial, agentSlots, selectedAgent)) {
+      refreshUi();
+    }
+    otaLoop();
+    pollOtaUi(now);
+    return;
+  }
+
   wifiConfigLoop();
 
-  if (!otaIsActive() && pairingPhase() != PAIRING_PAIRING && now - lastFrameMs >= FRAME_INTERVAL_MS) {
+  if (pairingPhase() != PAIRING_PAIRING && now - lastFrameMs >= FRAME_INTERVAL_MS) {
     lastFrameMs = now;
     currentFrame = (currentFrame + 1) % EXPR_FRAME_COUNT;
     drawExprFrame(roundDisplay(), agentStateAt(selectedAgent), voiceRecording, currentExpr, currentFrame, false);

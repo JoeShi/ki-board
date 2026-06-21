@@ -123,6 +123,7 @@ struct CompanionStatus {
     transport: TransportKind,
     device_name: String,
     endpoint: String,
+    firmware_version: String,
     recording: bool,
     busy: bool,
     paired: bool,
@@ -177,6 +178,7 @@ struct AppStateInner {
     transport_kind: TransportKind,
     endpoint: String,
     device_name: String,
+    firmware_version: String,
     connection_id: u64,
     missed_pongs: u8,
     recording: Option<RecordingHandle>,
@@ -514,7 +516,13 @@ fn handle_board_line(app: &AppHandle, state: &SharedState, line: &str) {
     }
     if message_type == "hello_ack" {
         let channel = value.get("channel").and_then(|v| v.as_str()).unwrap_or("-");
-        log_event(app, "INFO", "board", "rx", format!("hello_ack channel={channel}"));
+        let fw = value.get("fw").and_then(|v| v.as_str()).unwrap_or("");
+        if !fw.is_empty() {
+            if let Ok(mut inner) = state.inner.lock() {
+                inner.firmware_version = fw.to_string();
+            }
+        }
+        log_event(app, "INFO", "board", "rx", format!("hello_ack channel={channel} fw={fw}"));
         return;
     }
     if message_type != "button_event" {
@@ -725,6 +733,7 @@ fn get_status(state: State<SharedState>) -> Result<CompanionStatus, String> {
         transport: inner.transport_kind,
         device_name: inner.device_name.clone(),
         endpoint: inner.endpoint.clone(),
+        firmware_version: inner.firmware_version.clone(),
         recording: inner.recording.is_some(),
         busy: inner.busy,
         paired: !inner.settings.paired_board_id.trim().is_empty(),
@@ -1255,9 +1264,24 @@ fn expect_ota_ok(response: serde_json::Value) -> Result<serde_json::Value, Strin
 }
 
 #[tauri::command]
-fn ota_flash_firmware(
+async fn ota_flash_firmware(
     app: AppHandle,
-    state: State<SharedState>,
+    state: State<'_, SharedState>,
+    firmware_path: String,
+    transport_mode: String,
+) -> Result<String, String> {
+    let shared = state.inner().clone();
+    let app2 = app.clone();
+    tokio::task::spawn_blocking(move || {
+        ota_flash_firmware_inner(app2, &shared, firmware_path, transport_mode)
+    })
+    .await
+    .map_err(|err| format!("OTA task panicked: {err}"))?
+}
+
+fn ota_flash_firmware_inner(
+    app: AppHandle,
+    state: &SharedState,
     firmware_path: String,
     transport_mode: String,
 ) -> Result<String, String> {
@@ -1270,8 +1294,8 @@ fn ota_flash_firmware(
         return Err("firmware file is empty".to_string());
     }
     let sha256 = format!("{:x}", Sha256::digest(&image));
-    let kind = ensure_ota_transport(&app, state.inner(), &transport_mode)?;
-    wait_for_ota_auth(state.inner(), kind)?;
+    let kind = ensure_ota_transport(&app, state, &transport_mode)?;
+    wait_for_ota_auth(state, kind)?;
 
     log_event(
         &app,
@@ -1288,7 +1312,7 @@ fn ota_flash_firmware(
 
     let begin_id = Uuid::new_v4().to_string();
     expect_ota_ok(board_request(
-        state.inner(),
+        state,
         serde_json::json!({
             "type": "ota_begin",
             "request_id": begin_id,
@@ -1307,14 +1331,14 @@ fn ota_flash_firmware(
         let request_id = Uuid::new_v4().to_string();
         let encoded = general_purpose::STANDARD.encode(chunk);
         let response = expect_ota_ok(board_request(
-            state.inner(),
+            state,
             serde_json::json!({
                 "type": "ota_chunk",
                 "request_id": request_id,
                 "offset": offset,
                 "data_b64": encoded,
             }),
-            Duration::from_secs(10),
+            Duration::from_secs(30),
         )?)?;
         offset = response
             .get("offset")
@@ -1330,7 +1354,7 @@ fn ota_flash_firmware(
 
     let end_id = Uuid::new_v4().to_string();
     expect_ota_ok(board_request(
-        state.inner(),
+        state,
         serde_json::json!({"type": "ota_end", "request_id": end_id}),
         Duration::from_secs(20),
     )?)?;
@@ -2113,6 +2137,7 @@ pub fn run() {
                     transport_kind: TransportKind::None,
                     endpoint: String::new(),
                     device_name: String::new(),
+                    firmware_version: String::new(),
                     connection_id: 0,
                     missed_pongs: 0,
                     recording: None,
@@ -2227,7 +2252,7 @@ pub fn run() {
             hide_main_window,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Kiro Keyboard Companion");
+        .expect("error while running Ki-board");
 }
 
 #[cfg(test)]
@@ -2244,6 +2269,7 @@ mod tests {
                     transport_kind: TransportKind::None,
                     endpoint: String::new(),
                     device_name: String::new(),
+                    firmware_version: String::new(),
                     connection_id: 0,
                     missed_pongs: 0,
                     recording: Some(RecordingHandle {

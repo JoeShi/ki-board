@@ -96,6 +96,7 @@ type Status = {
   transport: "none" | "usb" | "ble";
   device_name: string;
   endpoint: string;
+  firmware_version: string;
   recording: boolean;
   busy: boolean;
   paired: boolean;
@@ -166,6 +167,7 @@ const defaultStatus: Status = {
   transport: "none",
   device_name: "",
   endpoint: "",
+  firmware_version: "",
   recording: false,
   busy: false,
   paired: false,
@@ -202,6 +204,7 @@ function App() {
   const [keys, setKeys] = useState<KeyBinding[]>(fallbackKeys);
   const [firmwarePath, setFirmwarePath] = useState("");
   const [flashOutput, setFlashOutput] = useState("");
+  const [otaInProgress, setOtaInProgress] = useState(false);
   const [activeView, setActiveView] = useState("device");
   const [uiError, setUiError] = useState("");
   const [hasApiKey, setHasApiKey] = useState(false);
@@ -417,12 +420,17 @@ function App() {
   async function otaFlashFirmware() {
     setUiError("");
     setFlashOutput("");
-    const output = await invoke<string>("ota_flash_firmware", {
-      firmwarePath,
-      transportMode: "current",
-    });
-    setFlashOutput(output);
-    await refreshRuntime();
+    setOtaInProgress(true);
+    try {
+      const output = await invoke<string>("ota_flash_firmware", {
+        firmwarePath,
+        transportMode: "current",
+      });
+      setFlashOutput(output);
+    } finally {
+      setOtaInProgress(false);
+      await refreshRuntime();
+    }
   }
 
   async function runAction(action: () => Promise<void>) {
@@ -452,13 +460,13 @@ function App() {
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="ghost">KI</div>
+          <img src="/kiro-logo.png" alt="Ki-board" className="brand-logo" />
           <div>
-            <h1>Kiro Deck</h1>
-            <p>Pixel companion</p>
+            <h1>Ki-board</h1>
+            <p>Go Talk</p>
           </div>
         </div>
-        {["device", "flash", "voice", "logs"].map((view) => (
+        {["device", "voice", "flash", "logs"].map((view) => (
           <button
             key={view}
             className={activeView === view ? "nav active" : "nav"}
@@ -467,6 +475,10 @@ function App() {
             {view.toUpperCase()}
           </button>
         ))}
+        <div className="sidebar-footer">
+          <p>Built by Kiro friends</p>
+          <p>v0.2.0</p>
+        </div>
       </aside>
 
       <section className="content">
@@ -483,15 +495,19 @@ function App() {
         <section className="lcd-grid">
           <div className="lcd">
             <span>LINK</span>
-            <strong>{status.device_connected ? `${status.transport.toUpperCase()} ${status.endpoint || status.serial_port}` : "DISCONNECTED"}</strong>
+            <strong>{status.device_connected ? status.transport.toUpperCase() : "DISCONNECTED"}</strong>
           </div>
           <div className="lcd">
-            <span>VOICE</span>
+            <span>FIRMWARE</span>
+            <strong>{status.firmware_version || "--"}</strong>
+          </div>
+          <div className="lcd">
+            <span>VOICE STATUS</span>
             <strong>{status.busy ? "BUSY" : status.recording ? "REC" : "IDLE"}</strong>
           </div>
-          <div className="lcd wide">
-            <span>TRANSCRIPT</span>
-            <strong>{status.last_partial || status.last_transcript || "--"}</strong>
+          <div className="lcd">
+            <span>VOICE MODE</span>
+            <strong>{settings.voice_engine === "system" ? "System" : "ASR"}</strong>
           </div>
         </section>
 
@@ -511,8 +527,8 @@ function App() {
             </select>
             <p className="hint good-text">Connects via USB first, falls back to Bluetooth automatically.</p>
             <div className="actions">
-              <button onClick={() => runAction(connect)}>Connect</button>
-              <button className="secondary" onClick={() => runAction(disconnect)}>Disconnect</button>
+              <button onClick={() => runAction(connect)} disabled={otaInProgress}>Connect</button>
+              <button className="secondary" onClick={() => runAction(disconnect)} disabled={otaInProgress}>Disconnect</button>
               <button className="secondary" onClick={() => runAction(refresh)}>Refresh</button>
             </div>
 
@@ -599,11 +615,18 @@ function App() {
                 <span>OTA FLASH</span>
                 <strong>{status.device_connected ? status.transport.toUpperCase() : "OFFLINE"}</strong>
               </div>
+              {otaInProgress && (
+                <p className="hint" style={{ color: "#f5a623", fontWeight: "bold" }}>
+                  ⚠️ OTA in progress — do NOT disconnect or perform other operations until complete.
+                </p>
+              )}
               <p className="hint">
                 OTA uses the current board connection. USB is fastest; BLE requires pairing and is slower.
               </p>
               <div className="actions">
-                <button onClick={() => runAction(otaFlashFirmware)} disabled={!firmwarePath.trim() || !status.device_connected}>OTA Flash</button>
+                <button onClick={() => runAction(otaFlashFirmware)} disabled={otaInProgress || !firmwarePath.trim() || !status.device_connected}>
+                  {otaInProgress ? "Flashing…" : "OTA Flash"}
+                </button>
               </div>
             </div>
 

@@ -324,7 +324,7 @@ bool handleAgentRegistryLine(const char* line, AgentSlot* slots, uint8_t& select
 }
 
 bool pollAgentRegistrySerial(Stream& serial, AgentSlot* slots, uint8_t& selectedAgent) {
-  static char line[1024];
+  static char line[2048];
   static size_t len = 0;
   bool changed = false;
 

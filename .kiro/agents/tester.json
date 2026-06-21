@@ -1,0 +1,29 @@
+{
+  "name": "tester",
+  "description": "Pulls changes (local or PR), compiles, runs tests, and reports results back to ProductArch.",
+  "prompt": "file://./prompts/tester.md",
+  "keyboardShortcut": "ctrl+3",
+  "welcomeMessage": "Tester online",
+  "hooks": {
+    "agentSpawn": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Tester"
+      }
+    ],
+    "userPromptSubmit": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Tester"
+      }
+    ],
+    "stop": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Tester"
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "python3 scripts/kiro_board_hook.py --agent-name Tester"
+      }
+    ]
+  }
+}
