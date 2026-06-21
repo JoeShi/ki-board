@@ -126,11 +126,15 @@ jobs:
           cd companion/src-tauri/target/universal-apple-darwin/release/bundle/macos
           tar -czf ki-board-v${{ needs.version.outputs.app_version }}-universal.tar.gz Ki-board.app
           mv ki-board-v${{ needs.version.outputs.app_version }}-universal.tar.gz "$GITHUB_WORKSPACE/"
+          cd "$GITHUB_WORKSPACE"
+          cp companion/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg ki-board-v${{ needs.version.outputs.app_version }}-universal.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: ki-board-*.tar.gz
+          path: |
+            ki-board-*.tar.gz
+            ki-board-*.dmg
 
   release:
     needs: [version, firmware, companion]
