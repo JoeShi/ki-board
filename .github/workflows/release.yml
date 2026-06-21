@@ -7,11 +7,68 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 jobs:
-  firmware:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      firmware_version: ${{ steps.version.outputs.firmware_version }}
+      release_sha: ${{ steps.version.outputs.release_sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check whether app version was changed manually
+        id: changed
+        run: |
+          VERSION_FILES='companion/package.json companion/package-lock.json companion/src-tauri/tauri.conf.json companion/src-tauri/Cargo.toml companion/src-tauri/Cargo.lock'
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            echo "manual=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" -- $VERSION_FILES | grep -q .; then
+            echo "manual=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "manual=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump app version
+        id: version
+        run: |
+          if [ "${{ steps.changed.outputs.manual }}" = "true" ]; then
+            VERSION=$(python3 scripts/app_version.py get)
+          else
+            VERSION=$(python3 scripts/app_version.py bump-patch)
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Release tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+          FW_VERSION=$(python3 scripts/firmware_version.py bump-patch)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add version.json companion/package.json companion/package-lock.json companion/src-tauri/tauri.conf.json companion/src-tauri/Cargo.toml companion/src-tauri/Cargo.lock
+          git commit -m "chore: bump release versions to v${VERSION} [skip ci]"
+          git push origin HEAD:main
+          echo "app_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "firmware_version=$FW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "release_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  firmware:
+    needs: version
+    runs-on: ubuntu-latest
+    outputs:
+      firmware_version: ${{ steps.version.outputs.firmware_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
 
       - uses: actions/setup-python@v5
         with:
@@ -26,13 +83,13 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          FW_VERSION=$(python3 scripts/firmware_version.py get)
+          echo "firmware_version=$FW_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Rename artifacts
         run: |
-          cp .pio/build/esp32-s3/firmware.bin kiro-board-firmware-v${{ steps.version.outputs.version }}.bin
-          cp .pio/build/esp32-s3-swap-key1-key3/firmware.bin kiro-board-firmware-swap-v${{ steps.version.outputs.version }}.bin
+          cp .pio/build/esp32-s3/firmware.bin kiro-board-firmware-v${{ needs.version.outputs.app_version }}-fw${{ steps.version.outputs.firmware_version }}.bin
+          cp .pio/build/esp32-s3-swap-key1-key3/firmware.bin kiro-board-firmware-swap-v${{ needs.version.outputs.app_version }}-fw${{ steps.version.outputs.firmware_version }}.bin
 
       - uses: actions/upload-artifact@v4
         with:
@@ -40,9 +97,12 @@ jobs:
           path: kiro-board-firmware-*.bin
 
   companion:
+    needs: version
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -60,35 +120,29 @@ jobs:
         working-directory: companion
         run: npx tauri build --target universal-apple-darwin
 
-      - name: Get version
-        id: version
-        run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
       - name: Rename artifacts
         run: |
           # Tauri produces: target/universal-apple-darwin/release/bundle/macos/Ki-board.app
           cd companion/src-tauri/target/universal-apple-darwin/release/bundle/macos
-          tar -czf ki-board-v${{ steps.version.outputs.version }}-universal.tar.gz Ki-board.app
-          mv ki-board-v${{ steps.version.outputs.version }}-universal.tar.gz "$GITHUB_WORKSPACE/"
+          tar -czf ki-board-v${{ needs.version.outputs.app_version }}-universal.tar.gz Ki-board.app
+          mv ki-board-v${{ needs.version.outputs.app_version }}-universal.tar.gz "$GITHUB_WORKSPACE/"
+          cd "$GITHUB_WORKSPACE"
+          cp companion/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg ki-board-v${{ needs.version.outputs.app_version }}-universal.dmg
 
       - uses: actions/upload-artifact@v4
         with:
           name: companion
-          path: ki-board-*.tar.gz
+          path: |
+            ki-board-*.tar.gz
+            ki-board-*.dmg
 
   release:
-    needs: [firmware, companion]
+    needs: [version, firmware, companion]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Get version
-        id: version
-        run: |
-          VERSION=$(python3 -c "import json; print(json.load(open('companion/src-tauri/tauri.conf.json'))['version'])")
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        with:
+          ref: ${{ needs.version.outputs.release_sha }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -98,8 +152,12 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: Ki-board v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.version.outputs.app_version }}
+          name: Ki-board v${{ needs.version.outputs.app_version }}
+          target_commitish: ${{ needs.version.outputs.release_sha }}
           files: artifacts/*
+          body: |
+            App version: ${{ needs.version.outputs.app_version }}
+            Firmware version: ${{ needs.version.outputs.firmware_version }}
           generate_release_notes: true
           make_latest: true

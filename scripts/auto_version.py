@@ -1,9 +1,12 @@
 """
-PlatformIO pre-build script: auto-increment patch version on every build.
+PlatformIO pre-build script: auto-increment patch version on local builds.
 
 Reads version.json, increments patch ONCE per pio run invocation (even if
 multiple envs share this script), writes back, and injects
 FW_VERSION_MAJOR / FW_VERSION_MINOR / FW_VERSION_PATCH as build flags.
+
+In GitHub Actions release builds, version.json is bumped and committed by the
+release workflow before PlatformIO runs, so this script only reads it there.
 """
 
 import json
@@ -20,7 +23,7 @@ with open(VERSION_FILE, "r") as f:
 # Only increment if the parent pio process hasn't already done so.
 # We write the parent PID into the lock; second env sees same PID -> skip.
 ppid = str(os.getppid())
-should_increment = True
+should_increment = os.environ.get("GITHUB_ACTIONS") != "true"
 if os.path.exists(LOCK_FILE):
     with open(LOCK_FILE, "r") as f:
         if f.read().strip() == ppid:
