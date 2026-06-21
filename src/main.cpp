@@ -18,6 +18,7 @@
 #include "pairing.h"
 #include "ui_render.h"
 #include "wifi_config.h"
+#include "wifi_ota.h"
 
 #define _STR(x) #x
 #define STR(x) _STR(x)
@@ -32,6 +33,7 @@ static constexpr uint16_t WIFI_STATUS_INTERVAL_MS = 1000;
 static constexpr uint16_t WIFI_RESET_HOLD_MS = 5000;
 static constexpr uint16_t BLE_STATUS_INTERVAL_MS = 2000;
 static constexpr uint16_t PAIRING_ENTER_HOLD_MS = 3000;
+static constexpr uint16_t WIFI_OTA_HOLD_MS = 10000;
 
 struct ButtonState {
   bool lastRaw = HIGH;
@@ -432,6 +434,9 @@ static void handleHeldButton(LogicalKey key, ButtonState& btn, unsigned long now
 }
 
 static void pollButtons() {
+  if (wifiOtaIsActive()) {
+    return;
+  }
   if (otaIsActive()) {
     return;
   }
@@ -493,12 +498,21 @@ static void pollButtons() {
     refreshUi();
   }
 
-  if (!wifiResetSuppressReleases && allPressed) {
-    bool heldLongEnough = true;
+  if (!wifiResetSuppressReleases && allPressed && pairingPhase() != PAIRING_PAIRING) {
+    unsigned long minHeldMs = UINT32_MAX;
     for (uint8_t i = 0; i < LOGICAL_KEY_COUNT; i++) {
-      heldLongEnough = heldLongEnough && now - buttons[i].pressedMs >= WIFI_RESET_HOLD_MS;
+      unsigned long held = now - buttons[i].pressedMs;
+      if (held < minHeldMs) minHeldMs = held;
     }
-    if (heldLongEnough) {
+    // 10s: enter WiFi OTA mode
+    if (minHeldMs >= WIFI_OTA_HOLD_MS) {
+      wifiResetSuppressReleases = true;
+      Serial.println("[WIFI_OTA] Three-key 10s hold, entering OTA");
+      wifiOtaBegin();
+      refreshUi();
+    }
+    // 5s: clear WiFi credentials (existing)
+    else if (minHeldMs >= WIFI_RESET_HOLD_MS) {
       wifiResetSuppressReleases = true;
       wifiForgetCredentials();
       refreshUi();
@@ -579,6 +593,17 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
+
+  // WiFi OTA mode: only run OTA loop and refresh display
+  if (wifiOtaIsActive()) {
+    wifiOtaLoop();
+    if (now - lastOtaUiMs >= 250) {
+      lastOtaUiMs = now;
+      drawOtaRound(&roundDisplay(), wifiOtaProgress());
+      drawOtaRect(rectDisplay(), wifiOtaPhase(), wifiOtaProgress());
+    }
+    return;
+  }
 
   // During OTA, minimize other work and drain serial aggressively.
   if (otaIsActive()) {
