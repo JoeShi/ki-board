@@ -1,6 +1,6 @@
 [package]
 name = "kiro-keyboard-companion"
-version = "0.1.0"
+version = "0.1.1"
 description = "Companion app for the Kiro shortcut keyboard"
 authors = ["Kiro"]
 edition = "2021"
