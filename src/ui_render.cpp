@@ -131,10 +131,26 @@ static void drawAgentTile(Arduino_GFX& rectLcd, const AgentSlot* slots,
                           uint8_t selectedAgent, bool voiceRecording,
                           bool voiceEditing, uint8_t agentIndex,
                           int x, int y, int w, int h) {
+  // Empty slot: draw muted border and centered gray placeholder, then return.
+  if (!slots[agentIndex].occupied) {
+    const uint16_t dimBorder = 0x2945;
+    const uint16_t gray = 0x4208;
+    rectLcd.drawRoundRect(x, y, w, h, 6, dimBorder);
+    int16_t tx, ty;
+    uint16_t tw, th;
+    const char* placeholder = "Empty";
+    rectLcd.setTextSize(2);
+    rectLcd.setTextColor(gray);
+    rectLcd.getTextBounds(placeholder, 0, 0, &tx, &ty, &tw, &th);
+    rectLcd.setCursor(x + (w - (int)tw) / 2, y + (h - (int)th) / 2);
+    rectLcd.print(placeholder);
+    return;
+  }
+
   const bool selected = agentIndex == selectedAgent;
   const uint16_t border = selected ? 0x07FF : 0x4208;
   const uint16_t title = selected ? 0x07FF : 0xFFFF;
-  const uint16_t stateColor = !slots[agentIndex].occupied ? 0x4208 :
+  const uint16_t stateColor =
                               agentStateAt(slots, agentIndex) == AGENT_RUNNING ? 0x07E0 :
                               agentStateAt(slots, agentIndex) == AGENT_ERROR ? 0xF800 :
                               0xC618;
