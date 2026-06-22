@@ -686,11 +686,14 @@ function App() {
                 <label>Resource ID</label>
                 <input value={settings.doubao_resource_id} onChange={(event) => setSettings({ ...settings, doubao_resource_id: event.target.value })} />
                 <label>Language override</label>
-                <input
+                <select
                   value={settings.doubao_language}
                   onChange={(event) => setSettings({ ...settings, doubao_language: event.target.value })}
-                  placeholder="Optional, for supported endpoints only"
-                />
+                >
+                  <option value="">自动检测</option>
+                  <option value="zh">中文</option>
+                  <option value="en">英文</option>
+                </select>
                 <p className="hint">
                   Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.
                 </p>
