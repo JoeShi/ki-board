@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ki-board 开发故事 — 从 Idea 到产品</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --accent-glow: rgba(88, 166, 255, 0.15);
+  --green: #3fb950;
+  --orange: #d29922;
+  --purple: #bc8cff;
+  --pink: #f778ba;
+  --timeline-line: #30363d;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.7;
+  overflow-x: hidden;
+}
+.hero {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2rem;
+  background: radial-gradient(ellipse at 50% 0%, rgba(88,166,255,0.08) 0%, transparent 60%);
+}
+.hero h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-weight: 800;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.hero p {
+  font-size: 1.2rem;
+  color: var(--text-muted);
+  max-width: 600px;
+}
+.hero .subtitle {
+  margin-top: 1.5rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+.scroll-hint {
+  margin-top: 3rem;
+  animation: bounce 2s infinite;
+  color: var(--text-muted);
+  font-size: 1.5rem;
+}
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(8px); }
+}
+
+/* Timeline */
+.timeline {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 4rem 2rem;
+  position: relative;
+}
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--timeline-line);
+  transform: translateX(-50%);
+}
+.phase {
+  position: relative;
+  margin-bottom: 4rem;
+  opacity: 0;
+  transform: translateY(30px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.phase.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.phase-dot {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid var(--bg);
+  transform: translateX(-50%);
+  z-index: 2;
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.phase-content {
+  width: 42%;
+  padding: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+.phase-content:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+.phase:nth-child(odd) .phase-content { margin-left: auto; margin-right: 8%; }
+.phase:nth-child(even) .phase-content { margin-left: 8%; }
+.phase-number {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  margin-bottom: 0.5rem;
+}
+.phase-title {
+  font-size: 1.3rem;
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+.phase-desc {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+}
+.phase-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+.tag {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 600;
+}
+.tag-human { background: rgba(63,185,80,0.15); color: var(--green); }
+.tag-kiro { background: rgba(88,166,255,0.15); color: var(--accent); }
+.tag-tool { background: rgba(188,140,255,0.15); color: var(--purple); }
+.tag-output { background: rgba(247,120,186,0.15); color: var(--pink); }
+
+/* Stats bar */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1.5rem;
+  max-width: 900px;
+  margin: 0 auto 4rem;
+  padding: 0 2rem;
+}
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  text-align: center;
+}
+.stat-value {
+  font-size: 2rem;
+  font-weight: 800;
+  color: var(--accent);
+}
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.3rem;
+}
+
+/* Architecture diagram */
+.arch-section {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 4rem 2rem;
+}
+.arch-section h2 {
+  font-size: 1.8rem;
+  margin-bottom: 2rem;
+  text-align: center;
+}
+.arch-diagram {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 2rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  color: var(--text-muted);
+  white-space: pre;
+}
+
+/* Footer */
+.footer {
+  text-align: center;
+  padding: 4rem 2rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border);
+  max-width: 900px;
+  margin: 0 auto;
+}
+.footer a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .timeline::before { left: 20px; }
+  .phase-dot { left: 20px; }
+  .phase-content { width: calc(100% - 50px); margin-left: 50px !important; margin-right: 0 !important; }
+  .stats { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<section class="hero">
+  <h1>Ki-board</h1>
+  <p>一个 5 屏 Agentic Coding 桌面控制器的开发故事<br>从 Idea 到产品，Kiro 全程参与</p>
+  <div class="subtitle">ESP32-S3 &bull; USB HID &bull; 5 LCD &bull; Kiro CLI Hook &bull; Companion App</div>
+  <div class="scroll-hint">&#8595;</div>
+</section>
+
+<!-- Stats -->
+<section class="stats">
+  <div class="stat-card"><div class="stat-value">5</div><div class="stat-label">屏幕</div></div>
+  <div class="stat-card"><div class="stat-value">9</div><div class="stat-label">开发阶段</div></div>
+  <div class="stat-card"><div class="stat-value">6</div><div class="stat-label">Spec 模块</div></div>
+  <div class="stat-card"><div class="stat-value">~300&yen;</div><div class="stat-label">硬件成本</div></div>
+  <div class="stat-card"><div class="stat-value">2-3</div><div class="stat-label">周 (总开发时间)</div></div>
+</section>
+
+<!-- Timeline -->
+<section class="timeline">
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 1</div>
+      <div class="phase-title">产品调研</div>
+      <div class="phase-desc">在小红书、淘宝、YouTube、GitHub 上搜索已有产品。了解 Stream Deck、DIY 宏键盘、ESP32 键盘项目的现状。发现市面上没有面向 AI agentic coding 的专用控制器。</div>
+      <div class="phase-tags">
+        <span class="tag tag-human">你做</span>
+        <span class="tag tag-tool">小红书</span>
+        <span class="tag tag-tool">淘宝</span>
+        <span class="tag tag-output">market-research.md</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 2</div>
+      <div class="phase-title">Idea 探讨</div>
+      <div class="phase-desc">和 Kiro 对话 3-4 轮。从模糊的痛点出发，Kiro 主动提问、挑战假设、帮你说"不做什么"，最终收敛为一份清晰的 Idea 文档。</div>
+      <div class="phase-tags">
+        <span class="tag tag-human">你做</span>
+        <span class="tag tag-kiro">Kiro 引导</span>
+        <span class="tag tag-output">Idea.md</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 3</div>
+      <div class="phase-title">硬件选型</div>
+      <div class="phase-desc">Kiro 帮你在淘宝搜索候选模块，对比规格/价格/兼容性，输出 BOM 采购清单。总成本约 300 元：ESP32-S3 + 3x ScreenKey + 圆形LCD + 矩形LCD。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro 分析</span>
+        <span class="tag tag-tool">淘宝</span>
+        <span class="tag tag-human">你下单</span>
+        <span class="tag tag-output">hardware-selection.md</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 4</div>
+      <div class="phase-title">接线设计</div>
+      <div class="phase-desc">Kiro 根据选定硬件生成 GPIO 分配表、双 SPI 总线规划、面包板接线指南。如果有 KiCad MCP，还能直接生成原理图。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro 生成</span>
+        <span class="tag tag-tool">KiCad (可选)</span>
+        <span class="tag tag-output">pins.h</span>
+        <span class="tag tag-output">硬件调试指南.md</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 5</div>
+      <div class="phase-title">环境搭建</div>
+      <div class="phase-desc">Kiro 创建 platformio.ini、项目结构、库依赖。过程中遇到工具链解压嵌套、esptool 版本、库不兼容等问题，全部记录到 steering 文件。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro 配置</span>
+        <span class="tag tag-tool">PlatformIO</span>
+        <span class="tag tag-output">platformio.ini</span>
+        <span class="tag tag-output">dev-environment.md</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 6</div>
+      <div class="phase-title">硬件验证</div>
+      <div class="phase-desc">硬件到货！按 A→G 七步逐项验证：上电 → 单屏 → 多屏 → 圆屏 → 矩形屏 → 按键 → USB HID。发现并解决了多屏 SPI 共享的 CS 片选关键问题。</div>
+      <div class="phase-tags">
+        <span class="tag tag-human">你接线</span>
+        <span class="tag tag-kiro">Kiro 写测试</span>
+        <span class="tag tag-output">test/ 验证程序</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 7</div>
+      <div class="phase-title">固件开发 (Spec 驱动)</div>
+      <div class="phase-desc">用 5 个 Spec 按依赖顺序推进：硬件驱动层 → UI 渲染层 → 状态机与按键 → Agent 注册 + Hook → BLE + 配对 + OTA。每个 Spec 由 Kiro 生成需求→设计→Tasks→代码。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro Spec</span>
+        <span class="tag tag-human">你审核</span>
+        <span class="tag tag-output">src/ 全部固件代码</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 8</div>
+      <div class="phase-title">Companion App</div>
+      <div class="phase-desc">用一个大 Spec 实现 Tauri 桌面应用：USB/BLE 双 transport、Kiro Hook 监听、Doubao ASR 语音识别、OTA 刷写、设置管理。Rust 后端 + React 前端。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro Spec</span>
+        <span class="tag tag-tool">Tauri + Rust</span>
+        <span class="tag tag-output">companion/ 目录</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="phase">
+    <div class="phase-dot"></div>
+    <div class="phase-content">
+      <div class="phase-number">阶段 9</div>
+      <div class="phase-title">产品化</div>
+      <div class="phase-desc">CI/CD 自动化：push to main 自动 bump 版本、编译固件+App、创建 GitHub Release。支持 OTA 空中升级，用户无需再手动烧录。</div>
+      <div class="phase-tags">
+        <span class="tag tag-kiro">Kiro 生成</span>
+        <span class="tag tag-tool">GitHub Actions</span>
+        <span class="tag tag-output">release.yml</span>
+      </div>
+    </div>
+  </div>
+
+</section>
+
+<!-- Architecture -->
+<section class="arch-section">
+  <h2>系统架构</h2>
+  <div class="arch-diagram">
++-------------------+          +--------------------+          +------------------+
+|   ESP32-S3 板子    |          |   Companion App    |          |  macOS / Kiro    |
+|                   |          |   (Tauri/Rust)     |          |                  |
+|  3x ScreenKey     |          |                    |          |  Ghostty 4-split |
+|  1x Round LCD     |  USB CDC |  USB CDC Transport |          |                  |
+|  1x Rect LCD      |&lt;--------&gt;|  BLE GATT Transport|          |  kiro-cli agents |
+|                   |  BLE GATT|                    |          |                  |
+|  USB HID Keyboard |---------&gt;|  Hook Listener     |&lt;---------|  Kiro CLI Hooks  |
+|                   |  按键输入 |  (TCP :47218)      |  JSONL   |                  |
+|  Agent Registry   |          |  ASR (Doubao)      |          |                  |
+|  State Machine    |          |  OTA Manager       |          |                  |
+|  Voice State      |          |  Settings          |          |                  |
++-------------------+          +--------------------+          +------------------+
+        |                                                              |
+        | USB HID (Cmd+], Ctrl x2, Enter, ESC, Backspace)             |
+        +-------------------------------------------------------------+
+</div>
+</section>
+
+<!-- How Kiro Participated -->
+<section class="arch-section">
+  <h2>Kiro 在每个阶段的角色</h2>
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:1rem;">
+    <div class="stat-card" style="text-align:left;">
+      <div style="color:var(--accent);font-weight:700;margin-bottom:0.5rem;">产品伙伴</div>
+      <div style="color:var(--text-muted);font-size:0.85rem;">阶段 1-3：主动提问、挑战假设、分析竞品、对比选型</div>
+    </div>
+    <div class="stat-card" style="text-align:left;">
+      <div style="color:var(--green);font-weight:700;margin-bottom:0.5rem;">架构师</div>
+      <div style="color:var(--text-muted);font-size:0.85rem;">阶段 4-5：GPIO 规划、SPI 分组、技术选型决策、环境配置</div>
+    </div>
+    <div class="stat-card" style="text-align:left;">
+      <div style="color:var(--purple);font-weight:700;margin-bottom:0.5rem;">调试助手</div>
+      <div style="color:var(--text-muted);font-size:0.85rem;">阶段 6：写验证程序、分析花屏原因、记录硬件 learnings</div>
+    </div>
+    <div class="stat-card" style="text-align:left;">
+      <div style="color:var(--pink);font-weight:700;margin-bottom:0.5rem;">开发引擎</div>
+      <div style="color:var(--text-muted);font-size:0.85rem;">阶段 7-9：Spec 驱动开发，从需求到代码全程生成</div>
+    </div>
+  </div>
+</section>
+
+<!-- Tech Stack -->
+<section class="arch-section">
+  <h2>技术栈</h2>
+  <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:1rem;">
+    <div class="stat-card">
+      <div style="font-weight:700;margin-bottom:0.3rem;">固件</div>
+      <div style="color:var(--text-muted);font-size:0.8rem;">Arduino + PlatformIO<br>ESP32-S3 USB HID<br>Arduino_GFX<br>NimBLE</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-weight:700;margin-bottom:0.3rem;">Companion</div>
+      <div style="color:var(--text-muted);font-size:0.8rem;">Tauri 2.x (Rust)<br>React + Vite + TS<br>cpal + tokio<br>btleplug</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-weight:700;margin-bottom:0.3rem;">通信</div>
+      <div style="color:var(--text-muted);font-size:0.8rem;">USB CDC JSONL<br>BLE GATT JSONL<br>USB HID Keyboard<br>TCP Hook Listener</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-weight:700;margin-bottom:0.3rem;">工具链</div>
+      <div style="color:var(--text-muted);font-size:0.8rem;">Kiro IDE + Spec<br>GitHub Actions CI<br>pioarduino<br>OTA 双分区</div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<section class="footer">
+  <p>Ki-board &mdash; 用 Kiro 从 0 到 1 构建的硬件产品</p>
+  <p style="margin-top:0.5rem;">
+    <a href="https://github.com/JoeShi/ki-board">GitHub</a> &bull;
+    <a href="replication-guide.md">复刻指南</a> &bull;
+    <a href="kiro-keyboard-prd.md">PRD</a> &bull;
+    <a href="kiro-keyboard-tech-design.md">技术设计</a>
+  </p>
+  <p style="margin-top:1rem;opacity:0.5;">Made with Kiro &hearts;</p>
+</section>
+
+<script>
+// Scroll-triggered fade-in for timeline phases
+const phases = document.querySelectorAll('.phase');
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.15 });
+phases.forEach(phase => observer.observe(phase));
+</script>
+
+</body>
+</html>
