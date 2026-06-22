@@ -17,13 +17,118 @@
 
 ---
 
+## 工具准备：Skills 与 MCP 配置
+
+> 在开始之前，确保你的 Kiro 环境装好以下 Skill 和 MCP Server。
+> 不同阶段依赖不同工具，按需安装即可。
+
+### 必装（全程使用）
+
+| 工具 | 用途 | 安装方式 | 哪个阶段用 |
+|------|------|----------|-----------|
+| **GitHub Power** | 推送代码、创建 PR、管理仓库 | Kiro 内置 Power，在 Powers 面板启用 | 全程 |
+| **PlatformIO CLI** | 编译和烧录 ESP32 固件 | `brew install platformio` 或 `pip install platformio` | 阶段 5-7 |
+| **Node.js 20+** | Companion App 前端构建 | `brew install node` 或 nvm | 阶段 8 |
+| **Rust toolchain** | Companion App 后端 (Tauri) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` | 阶段 8 |
+| **Python 3.10+** | hook 脚本、版本管理脚本 | 系统自带或 `brew install python3` | 阶段 7.4, 9 |
+| **pyserial** | hook 脚本 USB 自动发现 | `pip install pyserial` | 阶段 7.4 |
+
+### 推荐安装（提效工具）
+
+| 工具 | 用途 | 安装方式 | 哪个阶段用 |
+|------|------|----------|-----------|
+| **KiCad 8** | 画原理图 + PCB | `brew install --cask kicad` | 阶段 4B |
+| **KiCad MCP Server** | 让 Kiro 直接操控 KiCad 画原理图/PCB | 见下方配置 | 阶段 4B |
+| **Web Search** | Kiro 内置联网搜索 | Kiro 自带，无需额外配置 | 阶段 1, 3, 5 |
+
+### 可选（增强体验）
+
+| 工具 | 用途 | 安装方式 | 哪个阶段用 |
+|------|------|----------|-----------|
+| **小红书 Skill** | AI 辅助产品调研 | 如有社区 Skill 则安装 | 阶段 1 |
+| **淘宝/电商 Skill** | AI 辅助硬件选型和比价 | 如有社区 Skill 则安装 | 阶段 3 |
+| **Browser MCP** | Kiro 浏览网页获取信息 | 社区 MCP（如 playwright-mcp） | 阶段 1, 3 |
+
+### MCP Server 配置方法
+
+#### KiCad MCP Server（阶段 4 使用）
+
+```bash
+# 安装
+git clone https://github.com/mixelpixx/kicad-mcp-server.git
+cd kicad-mcp-server
+npm install
+```
+
+在 Kiro 的 MCP 配置文件中添加：
+```json
+{
+  "mcpServers": {
+    "kicad": {
+      "command": "node",
+      "args": ["/path/to/kicad-mcp-server/index.js"],
+      "env": {
+        "KICAD_PROJECT_DIR": "/path/to/your/ki-board/hardware"
+      }
+    }
+  }
+}
+```
+
+#### Browser MCP（可选，阶段 1 产品调研用）
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
+```
+
+### Kiro Steering 文件（项目开始时创建）
+
+在项目根目录创建以下文件，让 Kiro 理解项目上下文：
+
+#### `.kiro/steering/communication.md`
+```markdown
+---
+inclusion: always
+---
+# 沟通语言
+- 始终使用中文与用户沟通
+- 代码注释可以使用英文，但解释和讨论使用中文
+```
+
+#### `.kiro/steering/design-decisions.md`
+```markdown
+---
+inclusion: always
+---
+# 技术选型决策记录
+（随着阶段推进逐步填充）
+```
+
+#### `.kiro/steering/dev-environment.md`
+```markdown
+---
+inclusion: always
+---
+# 开发环境配置说明
+（搭建环境时记录踩坑经验）
+```
+
+---
+
 ## 总览：9 个阶段
 
 ```
 阶段 1: 产品调研        → 了解市场上有什么
 阶段 2: Idea 探讨       → 和 Kiro 对话确定方向
 阶段 3: 硬件选型        → 确定买什么、从哪买
-阶段 4: 原理图设计      → 确定怎么连线
+阶段 4: 原理图与PCB     → 接线规划 + KiCad 画原理图 + PCB 打板
 阶段 5: 环境搭建        → 装好开发工具
 阶段 6: 硬件验证        → 点亮第一块屏
 阶段 7: 固件开发(Spec)  → 用 Spec 驱动写固件
@@ -142,7 +247,11 @@
 
 ## 阶段 4：原理图与接线设计（硬件到货前）
 
-### 启动提示词
+这个阶段分两步：先做逻辑接线规划（面包板原型用），再画正式 KiCad 原理图（PCB 用）。
+
+### 4A. 逻辑接线规划
+
+#### 启动提示词
 
 ```
 基于 docs/hardware-selection.md 的 BOM，帮我设计接线方案。
@@ -168,9 +277,145 @@
 5. 后续 PCB 设计时的布局建议
 ```
 
-### 输出物
+#### 输出物
 - `include/pins.h`
 - `docs/硬件调试指南.md`（接线表部分）
+
+---
+
+### 4B. KiCad 原理图 + PCB（面包板验证通过后）
+
+> 面包板验证通过后，把杜邦线方案画成正式原理图，然后设计 PCB 送嘉立创打板。
+> KiCad 的文件是纯文本 S-expression 格式，AI 可以直接读写，就像写代码一样。
+
+#### 前置准备
+```bash
+# 安装 KiCad 8（免费开源 EDA）
+# Mac:
+brew install --cask kicad
+
+# 可选：安装 KiCad MCP Server（让 Kiro 直接操控 KiCad）
+# https://github.com/mixelpixx/kicad-mcp-server
+```
+
+#### 启动提示词（方式一：Kiro 生成 KiCad 文件）
+
+```
+帮我用 KiCad 画 Ki-board 的原理图。
+
+已确定的设计：
+- MCU: ESP32-S3-WROOM-1 (N16R8)
+- SPI-A (HSPI): 3x ST7735 ScreenKey，共享 MOSI(GPIO9) + CLK(GPIO10)，各自独立 CS/DC/RST/BL/KEY
+- SPI-B (FSPI): GC9D01 圆形LCD + ST7789V3 矩形LCD，共享 MOSI(GPIO12) + CLK(GPIO11)，各自独立 CS/DC/RST/BL
+- USB-C: USB OTG (HID + CDC)
+- 电源: 3.3V from dev board LDO
+- 连接器: 5x GH1.25 9PIN (ScreenKey) + 排针 (独立LCD)
+
+GPIO 分配见 include/pins.h。
+
+请生成：
+1. KiCad 原理图 (.kicad_sch)，包含：
+   - ESP32-S3 最小系统（含去耦电容、USB-C、晶振）
+   - SPI-A 总线连接 3 个 ScreenKey 连接器
+   - SPI-B 总线连接圆形 + 矩形 LCD 连接器
+   - 按键 GPIO + 上拉电阻
+   - 电源部分（3.3V rail + 滤波）
+2. 运行 ERC 检查确认无错误
+3. 输出原理图 PDF 供审核
+4. 如果你能操控 KiCad MCP，直接在 KiCad 里画；否则生成 .kicad_sch 文本文件
+```
+
+#### 启动提示词（方式二：Kiro 生成连接清单，人工画图）
+
+```
+帮我生成 Ki-board PCB 原理图的完整连接清单（netlist）。
+
+按以下格式输出每个网络连接：
+- 网络名
+- 源引脚 (芯片.引脚号)
+- 目标引脚 (连接器.引脚号)
+- 需要的被动元件（电阻/电容值）
+
+分成以下几个 sheet：
+1. ESP32-S3 最小系统 (电源、复位、USB、晶振)
+2. SPI-A 总线 (3x ScreenKey)
+3. SPI-B 总线 (圆形LCD + 矩形LCD)
+4. 按键输入 (3x GPIO + 内部上拉)
+5. 连接器定义 (GH1.25 引脚对应关系)
+
+另外帮我列出 BOM 中需要额外采购的被动元件（电阻、电容、晶振等）。
+```
+
+#### 启动提示词（方式三：有 KiCad MCP Server 时）
+
+```
+通过 KiCad MCP 帮我画原理图。
+
+步骤：
+1. 创建新项目 ESP32_5SCREEN_V0.2
+2. 放置 ESP32-S3-WROOM-1 symbol
+3. 放置 5 个 SPI LCD 连接器 symbol (GH1.25 9PIN)
+4. 放置去耦电容 (100nF x10 + 10uF x2)
+5. 放置 USB Type-C 连接器
+6. 按 include/pins.h 的分配画连线
+7. 添加电源标志 (3V3, GND)
+8. 添加网络标签 (SPI_A_MOSI, SPI_A_CLK, CS1, CS2, CS3...)
+9. 运行 ERC
+10. 导出 PDF
+
+全程使用 KiCad MCP 工具执行，有错误告诉我。
+```
+
+#### PCB 布局提示词（原理图确认后）
+
+```
+原理图 ERC 通过了，帮我做 PCB 布局。
+
+板子尺寸约束：
+- 目标尺寸: 80mm x 60mm（名片大小）
+- 层数: 2 层 (F.Cu + B.Cu)
+- 走线宽度: 信号 0.2mm, 电源 0.4mm
+
+布局要求：
+1. ESP32-S3 模块居中
+2. 5 个连接器分布在板子边缘（方便排线）
+3. SPI-A 的 3 个连接器靠近一侧
+4. SPI-B 的 2 个连接器靠近另一侧
+5. USB-C 在板子底部
+6. 去耦电容紧贴 ESP32 电源引脚
+7. 保持 BLE 天线区域无铜皮
+
+走线后运行 DRC，通过后导出 Gerber 文件。
+```
+
+#### 打板（发给嘉立创）
+
+```bash
+# Gerber 文件导出后：
+# 1. 打开 https://www.jlcpcb.com/
+# 2. 上传 Gerber ZIP
+# 3. 选择：2层板、1.6mm 厚度、HASL 焊盘、绿色阻焊
+# 4. 数量 5 片（约 ¥15-30）
+# 5. 下单等 3-5 天发货
+```
+
+#### 输出物
+- `hardware/ESP32_5SCREEN_V0.2.kicad_sch`（原理图）
+- `hardware/ESP32_5SCREEN_V0.2.kicad_pcb`（PCB 布局）
+- `hardware/gerber/`（制造文件）
+- `docs/ESP32_5SCREEN_V0.2.pdf`（原理图 PDF）
+
+#### 工具说明
+
+| 工具 | 作用 | AI 友好度 |
+|------|------|-----------|
+| **KiCad 8** | 免费开源 EDA，画原理图+PCB | ⭐⭐⭐⭐⭐ (文本格式) |
+| **KiCad MCP Server** | 让 AI 直接操控 KiCad | ⭐⭐⭐⭐⭐ (122 个工具) |
+| **Copper EDA** | KiCad fork，内嵌 AI chat | ⭐⭐⭐⭐ (自然语言画图) |
+| **立创 EDA** | 在线 EDA，嘉立创元件库 | ⭐⭐ (在线+私有格式) |
+
+> 关键点：KiCad 的 .kicad_sch 文件是纯文本 S-expression 格式，
+> AI 可以像写代码一样直接生成/编辑，不需要 GUI 操作。
 
 ---
 
@@ -434,7 +679,7 @@ pio run -e esp32-s3 --target upload --upload-port /dev/cu.usbmodemXXXX
 | 1. 产品调研 | 1-2 天 | 无 | - |
 | 2. Idea 探讨 | 30 分钟 | 无 | - |
 | 3. 硬件选型 | 1 小时 + 等发货 | 无 | - |
-| 4. 原理图设计 | 2 小时 | 无 | 与阶段 5 并行 |
+| 4. 原理图与PCB | 4A 接线 2h + 4B 原理图/PCB 4h | 无 | 与阶段 5 并行 |
 | 5. 环境搭建 | 2-4 小时 | 无 | 与阶段 4 并行 |
 | 6. 硬件验证 | 1-2 天 | 硬件到货 | - |
 | 7. 固件开发 | 5-7 天 | 阶段 6 通过 | - |
@@ -442,40 +687,6 @@ pio run -e esp32-s3 --target upload --upload-port /dev/cu.usbmodemXXXX
 | 9. 产品化 | 1-2 天 | 阶段 7+8 完成 | - |
 
 **总计：约 2-3 周**（含等硬件发货时间）
-
----
-
-## Kiro Steering 配置（项目开始时创建）
-
-在项目根目录创建以下文件，让 Kiro 理解项目上下文：
-
-### `.kiro/steering/communication.md`
-```markdown
----
-inclusion: always
----
-# 沟通语言
-- 始终使用中文与用户沟通
-- 代码注释可以使用英文，但解释和讨论使用中文
-```
-
-### `.kiro/steering/design-decisions.md`
-```markdown
----
-inclusion: always
----
-# 技术选型决策记录
-（随着阶段推进逐步填充）
-```
-
-### `.kiro/steering/dev-environment.md`
-```markdown
----
-inclusion: always
----
-# 开发环境配置说明
-（搭建环境时记录踩坑经验）
-```
 
 ---
 
@@ -487,3 +698,4 @@ inclusion: always
 4. **编译验证频繁**：每个 Spec 完成一个 task 就 `pio run` 验证
 5. **保留备用方案代码**：BLE HID、Web 配置等模块写了不删，用 build_src_filter 控制
 6. **乐观更新 + 外部校准**：UI 立即响应按键，hook 事件后续校准最终状态
+7. **Steering 随时更新**：每次踩坑都记到 `.kiro/steering/` 里，让 Kiro 下次不犯同样的错
