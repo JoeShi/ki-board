@@ -222,6 +222,29 @@ static void switchAgent(bool sendHid) {
   refreshUi();
 }
 
+static void switchAgentPrev(bool sendHid) {
+  if (voiceRecording) {
+    hidTap(KEY_ESC);
+    delay(DICTATION_COMMIT_DELAY_MS);
+    Serial.printf("[VOICE] Agent %d stopped recording before switch\n", selectedAgent + 1);
+  }
+  selectedAgent = (selectedAgent + AGENT_COUNT - 1) % AGENT_COUNT;
+  voiceRecording = false;
+  voiceEditing = false;
+  if (sendHid) {
+    sendCommandLeftBracket();
+  }
+  Serial.printf("[AGENT] selected Agent %d\n", selectedAgent + 1);
+  refreshUi();
+}
+
+static void handleLeftLong() {
+  if (voiceRecording || voiceEditing) {
+    return;
+  }
+  switchAgentPrev(true);
+}
+
 static void startVoiceInput() {
   voiceRecording = true;
   voiceEditing = false;
@@ -391,7 +414,11 @@ static void handleButtonRelease(LogicalKey key, unsigned long heldMs) {
 
   const bool longPress = heldMs >= LONG_PRESS_MS;
   if (key == KEY_LEFT_LOGICAL) {
-    handleLeftShort();
+    if (longPress) {
+      handleLeftLong();
+    } else {
+      handleLeftShort();
+    }
   } else if (key == KEY_MIDDLE_LOGICAL) {
     handleMiddleShort();
   } else if (longPress) {

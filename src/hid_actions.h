@@ -15,6 +15,7 @@ HidOutputMode hidGetOutputMode();
 
 void hidTap(uint8_t key);
 void sendCommandRightBracket();
+void sendCommandLeftBracket();
 void sendDoubleControl();
 void sendClearInput();
 

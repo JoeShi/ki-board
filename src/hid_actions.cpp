@@ -64,6 +64,19 @@ void sendCommandRightBracket() {
   }
 }
 
+void sendCommandLeftBracket() {
+  if (s_mode == HID_OUTPUT_BLE) {
+    // BLE HID: GUI + [
+    KeyAction action = {ActionType::HOTKEY, KEY_MOD_LGUI, KEY_LEFTBRACE, 0, "Cmd+["};
+    bleHidSendAction(action);
+  } else {
+    UsbKb.press(KEY_LEFT_GUI);
+    UsbKb.press('[');
+    delay(HID_TAP_MS);
+    UsbKb.releaseAll();
+  }
+}
+
 void sendDoubleControl() {
   hidTap(KEY_LEFT_CTRL);
   delay(90);
