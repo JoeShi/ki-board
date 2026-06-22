@@ -686,13 +686,16 @@ function App() {
                 <label>Resource ID</label>
                 <input value={settings.doubao_resource_id} onChange={(event) => setSettings({ ...settings, doubao_resource_id: event.target.value })} />
                 <label>Language override</label>
-                <input
+                <select
                   value={settings.doubao_language}
                   onChange={(event) => setSettings({ ...settings, doubao_language: event.target.value })}
-                  placeholder="Optional, for supported endpoints only"
-                />
+                >
+                  <option value="">自动检测</option>
+                  <option value="中文">中文</option>
+                  <option value="英文">英文</option>
+                </select>
                 <p className="hint">
-                  Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.
+                  默认「自动检测」对应空字符串，与后端逻辑兼容。
                 </p>
                 <label>X-Api-Key</label>
                 <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder="Stored in OS keyring" />
