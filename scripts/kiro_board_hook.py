@@ -5,6 +5,11 @@ Translate Kiro CLI hook events into board agent-state JSONL.
 Usage:
   python3 scripts/kiro_board_hook.py --agent-name planner --serial-port /dev/cu.usbmodem5B901608471
 
+Agent name resolution priority:
+  1. --agent-name CLI argument (explicit override)
+  2. KIRO_AGENT_NAME environment variable
+  3. Both missing -> clear error message and non-zero exit
+
 Serial port resolution priority:
   1. --serial-port CLI argument (explicit override)
   2. KIRO_BOARD_PORT environment variable
@@ -67,8 +72,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Kiro hook to board state bridge")
     parser.add_argument(
         "--agent-name",
-        required=True,
-        help="Custom agent name used by the board, for example planner",
+        default=None,
+        help="Custom agent name used by the board, for example planner. "
+        "Falls back to KIRO_AGENT_NAME env var if not provided.",
     )
     parser.add_argument(
         "--serial-port",
@@ -200,8 +206,20 @@ def emit_to_companion(line: str, companion_url: str) -> bool:
 
 def main() -> int:
     args = parse_args()
+
+    # Agent name resolution: CLI arg > env var > error
+    agent_name = args.agent_name
+    if not agent_name:
+        agent_name = os.environ.get("KIRO_AGENT_NAME") or None
+    if not agent_name:
+        print(
+            "Error: agent name is required. Provide --agent-name or set KIRO_AGENT_NAME.",
+            file=sys.stderr,
+        )
+        return 1
+
     event = read_hook_event()
-    payload = build_payload(event, args.agent_name)
+    payload = build_payload(event, agent_name)
     if payload is None:
         return 0
 
