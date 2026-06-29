@@ -1,0 +1,138 @@
+{
+  "brand": {
+    "subtitle": "说就完事儿"
+  },
+  "nav": {
+    "device": "设备",
+    "voice": "语音",
+    "flash": "固件",
+    "logs": "日志"
+  },
+  "footer": {
+    "builtBy": "Kiro friends 出品"
+  },
+  "topbar": {
+    "eyebrow": "USB CDC · BLE GATT · 三方ASR · ESP32-S3",
+    "boardOnline": "键盘在线",
+    "boardOffline": "键盘离线"
+  },
+  "viewTitle": {
+    "device": "设备控制",
+    "voice": "语音控制台",
+    "flash": "固件烧录",
+    "logs": "事件流"
+  },
+  "lcd": {
+    "link": "连接",
+    "firmware": "固件",
+    "voiceStatus": "语音状态",
+    "voiceMode": "语音模式",
+    "disconnected": "未连接",
+    "busy": "忙碌",
+    "rec": "录音",
+    "idle": "空闲",
+    "system": "系统",
+    "asr": "ASR"
+  },
+  "device": {
+    "title": "设备桥接",
+    "boardUsbPort": "键盘 USB 端口",
+    "autoDetect": "自动检测 ki-board",
+    "connectHint": "优先 USB 连接，自动回退到蓝牙。",
+    "connect": "连接",
+    "disconnect": "断开",
+    "refresh": "刷新",
+    "blePairing": "BLE 配对",
+    "bleAuthorized": "BLE 已授权（本机）",
+    "bleNotAuthorized": "BLE 未授权 — 请配对以允许无线访问。",
+    "pairingInstructions": "在键盘上同时按住 <strong>左键 + 右键</strong> 约3秒，屏幕出现6位数字后点击配对，核对数字并在键盘上确认（● 中键）。",
+    "pair": "配对",
+    "forgetDevice": "忘记设备",
+    "comparePairingCode": "与键盘屏幕上的数字核对，然后在键盘上按 ●：",
+    "confirmPairing": "确认配对",
+    "pairingCodeMatch": "此数字是否与键盘屏幕上显示的一致？",
+    "pairingConfirmHint": "如果一致，按键盘上的 <strong>中键 (●)</strong> 确认，或按 <strong>左键 (◀)</strong> 取消。",
+    "close": "关闭"
+  },
+  "keys": {
+    "title": "按键设置",
+    "label": "标签",
+    "action": "动作",
+    "key": "按键",
+    "none": "无",
+    "hotkey": "快捷键",
+    "voice": "语音",
+    "agentNext": "下一个 Agent",
+    "readBoard": "从键盘读取",
+    "writeBoard": "写入键盘"
+  },
+  "flash": {
+    "title": "固件烧录",
+    "firmwareFile": "固件 .bin 文件",
+    "selectFile": "选择文件…",
+    "noFileSelected": "未选择文件",
+    "otaFlash": "OTA 烧录",
+    "offline": "离线",
+    "otaInProgress": "⚠️ OTA 进行中 — 请勿断开连接或执行其他操作。",
+    "otaHint": "OTA 使用当前连接。USB 最快；BLE 需要配对且较慢。",
+    "otaFlashBtn": "OTA 烧录",
+    "flashing": "烧录中…"
+  },
+  "voice": {
+    "title": "语音",
+    "voiceEngine": "语音引擎",
+    "systemHid": "系统 (HID)",
+    "thirdPartyAsr": "三方 ASR",
+    "thirdPartyHint": "Companion 录制所选麦克风音频，发送至 ASR 提供商，然后粘贴转写结果。",
+    "systemHint": "键盘通过双击 Control 触发 macOS 听写（HID 方式）。此模式下 Companion 不录音。",
+    "asrProvider": "ASR 提供商",
+    "doubao": "豆包 / 火山引擎",
+    "audioInputDevice": "音频输入设备",
+    "systemDefault": "系统默认",
+    "refreshDevices": "刷新设备",
+    "endpoint": "服务端点",
+    "resourceId": "资源 ID",
+    "languageOverride": "语言覆盖",
+    "languagePlaceholder": "可选，仅部分端点支持",
+    "languageHint": "默认留空。火山引擎文档说明此字段取决于端点/模式。",
+    "apiKey": "X-Api-Key",
+    "apiKeyPlaceholder": "存储在系统钥匙串中",
+    "keySaved": "密钥已安全保存。",
+    "keyMissing": "密钥缺失：请先粘贴 X-Api-Key 再测试。",
+    "pasteTranscript": "粘贴转写结果",
+    "saveVoice": "保存语音设置",
+    "testInput": "测试输入",
+    "transcribing": "转写中",
+    "listening": "听取中",
+    "ready": "就绪",
+    "testHint": "点击开始并说话，测试三方 ASR 转写。",
+    "start": "开始",
+    "stop": "停止",
+    "cancel": "取消",
+    "apiKeyError": "请先粘贴豆包 X-Api-Key，然后点击保存语音设置或重新开始。"
+  },
+  "logs": {
+    "title": "事件日志",
+    "clear": "清空"
+  },
+  "pairing": {
+    "requesting": "正在请求配对… 请在键盘上确认。",
+    "connecting": "正在连接…",
+    "pairedSuccess": "配对成功。",
+    "pairingFailed": "配对失败：{{reason}}",
+    "authenticated": "已认证。",
+    "authRequired": "键盘需要配对。请将键盘置于配对模式后点击配对。",
+    "deviceForgotten": "设备已忘记。"
+  },
+  "overlay": {
+    "listening": "● 正在听…",
+    "transcribing": "● 转写中…",
+    "done": "✓ 完成",
+    "error": "✗ 错误",
+    "speakNow": "请说话…",
+    "empty": "（空）"
+  },
+  "language": {
+    "label": "语言"
+  }
+}
