@@ -70,3 +70,6 @@ assets/kiro_*.gif
 
 # ===== 视频渲染产物 (可由 remotion 重新生成) =====
 video/out/
+
+# ===== 演示文稿 =====
+deck/

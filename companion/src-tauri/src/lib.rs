@@ -68,6 +68,8 @@ struct Settings {
     voice_engine: String,
     #[serde(default = "default_asr_provider")]
     asr_provider: String,
+    #[serde(default)]
+    language: String,
 }
 
 impl Default for Settings {
@@ -85,6 +87,7 @@ impl Default for Settings {
             audio_input_device: String::new(),
             voice_engine: default_voice_engine(),
             asr_provider: default_asr_provider(),
+            language: String::new(),
         }
     }
 }

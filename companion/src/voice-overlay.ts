@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import i18n from "./i18n";
 
 const statusEl = document.getElementById("status")!;
 const textEl = document.getElementById("text")!;
@@ -22,30 +23,31 @@ function setText(text: string, emptyText: string) {
 }
 
 function renderStatus(status: CompanionStatus, fallbackOnly = false) {
+  const t = i18n.t.bind(i18n);
   if (status.recording) {
     if (fallbackOnly && hasLiveText) {
-      statusEl.textContent = "● Listening...";
+      statusEl.textContent = t("overlay.listening");
       return;
     }
-    setText(status.last_partial, "Speak now...");
-    statusEl.textContent = "● Listening...";
+    setText(status.last_partial, t("overlay.speakNow"));
+    statusEl.textContent = t("overlay.listening");
     return;
   }
   if (status.busy) {
     if (fallbackOnly && hasLiveText) {
-      statusEl.textContent = "● Transcribing...";
+      statusEl.textContent = t("overlay.transcribing");
       return;
     }
-    setText(status.last_partial || status.last_transcript, "Transcribing...");
-    statusEl.textContent = "● Transcribing...";
+    setText(status.last_partial || status.last_transcript, t("overlay.transcribing"));
+    statusEl.textContent = t("overlay.transcribing");
     return;
   }
   if (status.last_error) {
-    setText(status.last_error, "Error");
-    statusEl.textContent = "✗ Error";
+    setText(status.last_error, t("overlay.error"));
+    statusEl.textContent = t("overlay.error");
     return;
   }
-  setText(status.last_transcript, "Speak now...");
+  setText(status.last_transcript, t("overlay.speakNow"));
 }
 
 async function syncStatus() {
@@ -58,18 +60,19 @@ async function syncStatus() {
 
 listen<{ event: string; text: string }>("voice-event", (event) => {
   const { event: evt, text } = event.payload;
+  const t = i18n.t.bind(i18n);
   if (evt === "partial") {
     hasLiveText = Boolean(text);
-    setText(text, "Speak now...");
-    statusEl.textContent = "● Listening...";
+    setText(text, t("overlay.speakNow"));
+    statusEl.textContent = t("overlay.listening");
   } else if (evt === "final") {
     hasLiveText = Boolean(text);
-    setText(text, "(empty)");
-    statusEl.textContent = "✓ Done";
+    setText(text, t("overlay.empty"));
+    statusEl.textContent = t("overlay.done");
   } else if (evt === "error") {
     hasLiveText = Boolean(text);
-    setText(text, "Error");
-    statusEl.textContent = "✗ Error";
+    setText(text, t("overlay.error"));
+    statusEl.textContent = t("overlay.error");
   }
 });
 

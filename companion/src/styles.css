@@ -144,6 +144,22 @@ label {
   margin: 2px 0;
 }
 
+.lang-select {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.lang-select:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent-hover);
+}
+
 .brand {
   display: grid;
   grid-template-columns: 52px 1fr;

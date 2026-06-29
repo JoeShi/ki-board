@@ -5,6 +5,8 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import { open } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useTranslation } from "react-i18next";
+import "./i18n";
 import "./styles.css";
 
 // ─── Global voice dictation shortcut (module-level, outside React) ──────────
@@ -89,6 +91,7 @@ type Settings = {
   audio_input_device: string;
   voice_engine: string;
   asr_provider: string;
+  language: string;
 };
 
 type Status = {
@@ -142,6 +145,7 @@ const defaultSettings: Settings = {
   audio_input_device: "",
   voice_engine: "third_party",
   asr_provider: "doubao",
+  language: "",
 };
 
 function isThirdPartyVoice(settings: Settings) {
@@ -195,6 +199,7 @@ const keyOptions = [
 const modifierOptions = ["ctrl", "shift", "alt", "gui"];
 
 function App() {
+  const { t, i18n } = useTranslation();
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [status, setStatus] = useState<Status>(defaultStatus);
   const [ports, setPorts] = useState<SerialPortInfo[]>([]);
@@ -213,10 +218,21 @@ function App() {
   const [pairMessage, setPairMessage] = useState("");
   const [voiceText, setVoiceText] = useState("");
 
+  async function switchLanguage(lang: string) {
+    i18n.changeLanguage(lang);
+    const next = { ...settings, language: lang };
+    setSettings(next);
+    await invoke("save_settings", { settings: next });
+  }
+
   const boardPorts = useMemo(() => ports.filter((port) => port.kind !== "flash-ch340"), [ports]);
 
   async function loadSettings() {
-    setSettings(normalizeVoiceSettings(await invoke<Settings>("get_settings")));
+    const loaded = normalizeVoiceSettings(await invoke<Settings>("get_settings"));
+    setSettings(loaded);
+    if (loaded.language) {
+      i18n.changeLanguage(loaded.language);
+    }
   }
 
   async function refreshRuntime() {
@@ -296,24 +312,24 @@ function App() {
             break;
           case "ok":
             setPairCode(null);
-            setPairMessage("Paired successfully.");
+            setPairMessage(i18n.t("pairing.pairedSuccess"));
             refreshRuntime();
             break;
           case "failed":
             setPairCode(null);
-            setPairMessage(`Pairing failed: ${payload.reason ?? "unknown"}`);
+            setPairMessage(i18n.t("pairing.pairingFailed", { reason: payload.reason ?? "unknown" }));
             break;
           case "auth_ok":
-            setPairMessage("Authenticated.");
+            setPairMessage(i18n.t("pairing.authenticated"));
             refreshRuntime();
             break;
           case "auth_required":
-            setPairMessage("Board requires pairing. Put the board in pairing mode and click Pair.");
+            setPairMessage(i18n.t("pairing.authRequired"));
             refreshRuntime();
             break;
           case "unpaired":
             setPairCode(null);
-            setPairMessage("Device forgotten.");
+            setPairMessage(i18n.t("pairing.deviceForgotten"));
             refreshRuntime();
             break;
         }
@@ -357,7 +373,7 @@ function App() {
 
   async function startPairing() {
     setUiError("");
-    setPairMessage("Requesting pairing… confirm on the board.");
+    setPairMessage(t("pairing.requesting"));
     await invoke("start_pairing");
   }
 
@@ -367,7 +383,7 @@ function App() {
     setUiError("");
     if (!status.device_connected) {
       await invoke("save_settings", { settings });
-      setPairMessage("Connecting…");
+      setPairMessage(t("pairing.connecting"));
       await invoke("connect_device", { portName: settings.serial_port || null });
       await refreshRuntime();
     }
@@ -398,7 +414,7 @@ function App() {
     const saved = await invoke<boolean>("has_doubao_api_key");
     setHasApiKey(saved);
     if (!saved) {
-      throw new Error("Paste the Doubao provider X-Api-Key, then click Save Voice or Start again.");
+      throw new Error(t("voice.apiKeyError"));
     }
     await invoke("start_recording");
     await refresh();
@@ -464,20 +480,28 @@ function App() {
           <img src="/kiro-logo.png" alt="Ki-board" className="brand-logo" />
           <div>
             <h1>Ki-board</h1>
-            <p>Go Talk</p>
+            <p>{t("brand.subtitle")}</p>
           </div>
         </div>
-        {["device", "voice", "flash", "logs"].map((view) => (
+        {(["device", "voice", "flash", "logs"] as const).map((view) => (
           <button
             key={view}
             className={activeView === view ? "nav active" : "nav"}
             onClick={() => setActiveView(view)}
           >
-            {view.toUpperCase()}
+            {t(`nav.${view}`)}
           </button>
         ))}
         <div className="sidebar-footer">
-          <p>Built by Kiro friends</p>
+          <select
+            className="lang-select"
+            value={settings.language || i18n.language}
+            onChange={(e) => switchLanguage(e.target.value)}
+          >
+            <option value="en">English</option>
+            <option value="zh-CN">中文</option>
+          </select>
+          <p>{t("footer.builtBy")}</p>
           <p>v0.2.0</p>
         </div>
       </aside>
@@ -485,73 +509,68 @@ function App() {
       <section className="content">
         <header className="topbar">
           <div>
-            <div className="eyebrow">USB CDC · BLE GATT · 3P ASR · ESP32-S3</div>
-            <h2>{viewTitle(activeView)}</h2>
+            <div className="eyebrow">{t("topbar.eyebrow")}</div>
+            <h2>{t(`viewTitle.${activeView}`, { defaultValue: t("viewTitle.device") })}</h2>
           </div>
           <div className={status.device_connected ? "status online" : "status"}>
-            {status.device_connected ? "BOARD ONLINE" : "BOARD OFFLINE"}
+            {status.device_connected ? t("topbar.boardOnline") : t("topbar.boardOffline")}
           </div>
         </header>
 
         <section className="lcd-grid">
           <div className="lcd">
-            <span>LINK</span>
-            <strong>{status.device_connected ? status.transport.toUpperCase() : "DISCONNECTED"}</strong>
+            <span>{t("lcd.link")}</span>
+            <strong>{status.device_connected ? status.transport.toUpperCase() : t("lcd.disconnected")}</strong>
           </div>
           <div className="lcd">
-            <span>FIRMWARE</span>
+            <span>{t("lcd.firmware")}</span>
             <strong>{status.firmware_version || "--"}</strong>
           </div>
           <div className="lcd">
-            <span>VOICE STATUS</span>
-            <strong>{status.busy ? "BUSY" : status.recording ? "REC" : "IDLE"}</strong>
+            <span>{t("lcd.voiceStatus")}</span>
+            <strong>{status.busy ? t("lcd.busy") : status.recording ? t("lcd.rec") : t("lcd.idle")}</strong>
           </div>
           <div className="lcd">
-            <span>VOICE MODE</span>
-            <strong>{settings.voice_engine === "system" ? "System" : "ASR"}</strong>
+            <span>{t("lcd.voiceMode")}</span>
+            <strong>{settings.voice_engine === "system" ? t("lcd.system") : t("lcd.asr")}</strong>
           </div>
         </section>
 
         {(uiError || status.last_error) && <div className="error-banner">{uiError || status.last_error}</div>}
 
         {activeView === "device" && (
-          <Panel title="Device Bridge">
-            <label>Board USB port</label>
+          <Panel title={t("device.title")}>
+            <label>{t("device.boardUsbPort")}</label>
             <select
               value={settings.serial_port}
               onChange={(event) => setSettings({ ...settings, serial_port: event.target.value })}
             >
-              <option value="">Auto-detect ki-board</option>
+              <option value="">{t("device.autoDetect")}</option>
               {boardPorts.map((port) => (
                 <option key={port.name} value={port.name}>{port.name} · {port.kind}</option>
               ))}
             </select>
-            <p className="hint good-text">Connects via USB first, falls back to Bluetooth automatically.</p>
+            <p className="hint good-text">{t("device.connectHint")}</p>
             <div className="actions">
-              <button onClick={() => runAction(connect)} disabled={otaInProgress}>Connect</button>
-              <button className="secondary" onClick={() => runAction(disconnect)} disabled={otaInProgress}>Disconnect</button>
-              <button className="secondary" onClick={() => runAction(refresh)}>Refresh</button>
+              <button onClick={() => runAction(connect)} disabled={otaInProgress}>{t("device.connect")}</button>
+              <button className="secondary" onClick={() => runAction(disconnect)} disabled={otaInProgress}>{t("device.disconnect")}</button>
+              <button className="secondary" onClick={() => runAction(refresh)}>{t("device.refresh")}</button>
             </div>
 
             <div style={{ height: 1, background: "#2a2f3a", margin: "18px 0" }} />
 
-            <label>BLE Pairing</label>
+            <label>{t("device.blePairing")}</label>
             <p className={status.paired ? "hint good-text" : "hint warn-text"}>
-              {status.paired
-                ? "BLE AUTHORIZED for this Mac"
-                : "BLE NOT AUTHORIZED — pair to allow wireless access."}
+              {status.paired ? t("device.bleAuthorized") : t("device.bleNotAuthorized")}
             </p>
-            <p className="hint">
-              On the board, hold the <strong>left + right</strong> keys together for ~3s until a 6-digit
-              code appears. Then click Pair, compare the code, and confirm on the board (● middle key).
-            </p>
+            <p className="hint" dangerouslySetInnerHTML={{ __html: t("device.pairingInstructions") }} />
             <div className="actions">
-              <button onClick={() => runAction(pairFlow)}>Pair</button>
-              <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>Forget device</button>
+              <button onClick={() => runAction(pairFlow)}>{t("device.pair")}</button>
+              <button className="secondary" onClick={() => runAction(forgetDevice)} disabled={!status.paired}>{t("device.forgetDevice")}</button>
             </div>
             {status.pairing_code && (
               <div style={{ marginTop: 12, padding: "12px 14px", background: "#10131a", border: "1px solid #07c2d6", borderRadius: 8 }}>
-                <div style={{ color: "#aab", fontSize: 12 }}>Compare with the board, then press ● on the board:</div>
+                <div style={{ color: "#aab", fontSize: 12 }}>{t("device.comparePairingCode")}</div>
                 <div style={{ fontFamily: "monospace", fontSize: 32, letterSpacing: 6, color: "#fff", marginTop: 4 }}>{status.pairing_code}</div>
               </div>
             )}
@@ -560,23 +579,23 @@ function App() {
         )}
 
         {activeView === "keys" && (
-          <Panel title="Key Tiles">
+          <Panel title={t("keys.title")}>
             <div className="key-grid">
               {keys.map((binding, index) => (
                 <div className="key-card" key={index}>
                   <div className="key-screen">{binding.label || `KEY ${index + 1}`}</div>
-                  <label>Label</label>
+                  <label>{t("keys.label")}</label>
                   <input value={binding.label} onChange={(event) => updateKey(index, { label: event.target.value })} />
-                  <label>Action</label>
+                  <label>{t("keys.action")}</label>
                   <select value={binding.action_type} onChange={(event) => updateKey(index, { action_type: event.target.value })}>
-                    <option value="hotkey">Hotkey</option>
-                    <option value="voice">Voice</option>
-                    <option value="agent_next">Next Agent</option>
-                    <option value="none">None</option>
+                    <option value="hotkey">{t("keys.hotkey")}</option>
+                    <option value="voice">{t("keys.voice")}</option>
+                    <option value="agent_next">{t("keys.agentNext")}</option>
+                    <option value="none">{t("keys.none")}</option>
                   </select>
-                  <label>Key</label>
+                  <label>{t("keys.key")}</label>
                   <select value={binding.key} onChange={(event) => updateKey(index, { key: event.target.value })}>
-                    <option value="">None</option>
+                    <option value="">{t("keys.none")}</option>
                     {keyOptions.map((key) => <option key={key} value={key}>{key}</option>)}
                   </select>
                   <div className="chips">
@@ -594,39 +613,37 @@ function App() {
               ))}
             </div>
             <div className="actions">
-              <button onClick={() => runAction(loadKeymap)}>Read Board</button>
-              <button onClick={() => runAction(saveKeymap)}>Write Board</button>
+              <button onClick={() => runAction(loadKeymap)}>{t("keys.readBoard")}</button>
+              <button onClick={() => runAction(saveKeymap)}>{t("keys.writeBoard")}</button>
             </div>
           </Panel>
         )}
 
         {activeView === "flash" && (
-          <Panel title="Firmware Flash">
-            <label>Firmware .bin file</label>
+          <Panel title={t("flash.title")}>
+            <label>{t("flash.firmwareFile")}</label>
             <div className="actions">
               <button onClick={async () => {
                 const file = await open({ multiple: false, filters: [{ name: "Firmware", extensions: ["bin"] }] });
                 if (file) setFirmwarePath(file);
-              }}>Select File…</button>
-              <span style={{ fontSize: "0.85em", opacity: 0.7 }}>{firmwarePath || "No file selected"}</span>
+              }}>{t("flash.selectFile")}</button>
+              <span style={{ fontSize: "0.85em", opacity: 0.7 }}>{firmwarePath || t("flash.noFileSelected")}</span>
             </div>
 
             <div className="test-box">
               <div className="test-head">
-                <span>OTA FLASH</span>
-                <strong>{status.device_connected ? status.transport.toUpperCase() : "OFFLINE"}</strong>
+                <span>{t("flash.otaFlash")}</span>
+                <strong>{status.device_connected ? status.transport.toUpperCase() : t("flash.offline")}</strong>
               </div>
               {otaInProgress && (
                 <p className="hint" style={{ color: "#f5a623", fontWeight: "bold" }}>
-                  ⚠️ OTA in progress — do NOT disconnect or perform other operations until complete.
+                  {t("flash.otaInProgress")}
                 </p>
               )}
-              <p className="hint">
-                OTA uses the current board connection. USB is fastest; BLE requires pairing and is slower.
-              </p>
+              <p className="hint">{t("flash.otaHint")}</p>
               <div className="actions">
                 <button onClick={() => runAction(otaFlashFirmware)} disabled={otaInProgress || !firmwarePath.trim() || !status.device_connected}>
-                  {otaInProgress ? "Flashing…" : "OTA Flash"}
+                  {otaInProgress ? t("flash.flashing") : t("flash.otaFlashBtn")}
                 </button>
               </div>
             </div>
@@ -636,68 +653,64 @@ function App() {
         )}
 
         {activeView === "voice" && (
-          <Panel title="Voice">
-            <label>Voice engine</label>
+          <Panel title={t("voice.title")}>
+            <label>{t("voice.voiceEngine")}</label>
             <div className="chips">
               <button
                 className={!isThirdPartyVoice(settings) ? "chip active" : "chip"}
                 onClick={() => runAction(() => selectVoiceEngine("system"))}
               >
-                System (HID)
+                {t("voice.systemHid")}
               </button>
               <button
                 className={isThirdPartyVoice(settings) ? "chip active" : "chip"}
                 onClick={() => runAction(() => selectVoiceEngine("third_party"))}
               >
-                3P ASR
+                {t("voice.thirdPartyAsr")}
               </button>
             </div>
             <p className="hint">
-              {isThirdPartyVoice(settings)
-                ? "Companion records the selected mic, sends audio to the selected ASR provider, then pastes the transcript."
-                : "The board triggers macOS dictation via the Control double-tap (HID). The companion does not record in this mode."}
+              {isThirdPartyVoice(settings) ? t("voice.thirdPartyHint") : t("voice.systemHint")}
             </p>
 
             {isThirdPartyVoice(settings) ? (
               <>
-                <label>ASR provider</label>
+                <label>{t("voice.asrProvider")}</label>
                 <select
                   value={settings.asr_provider || "doubao"}
                   onChange={(event) => setSettings(normalizeVoiceSettings({ ...settings, asr_provider: event.target.value }))}
                 >
-                  <option value="doubao">Doubao / Volcengine</option>
+                  <option value="doubao">{t("voice.doubao")}</option>
                 </select>
-                <label>Audio input device</label>
+                <label>{t("voice.audioInputDevice")}</label>
                 <select
                   value={settings.audio_input_device}
                   onChange={(event) => setSettings({ ...settings, audio_input_device: event.target.value })}
                 >
-                  <option value="">System default</option>
+                  <option value="">{t("voice.systemDefault")}</option>
                   {audioDevices.map((device) => (
                     <option key={device} value={device}>{device}</option>
                   ))}
                 </select>
                 <div className="actions">
-                  <button className="secondary" onClick={() => runAction(loadAudioDevices)}>Refresh devices</button>
+                  <button className="secondary" onClick={() => runAction(loadAudioDevices)}>{t("voice.refreshDevices")}</button>
                 </div>
 
-                <label>Endpoint</label>
+                <label>{t("voice.endpoint")}</label>
                 <input value={settings.doubao_endpoint} onChange={(event) => setSettings({ ...settings, doubao_endpoint: event.target.value })} />
-                <label>Resource ID</label>
+                <label>{t("voice.resourceId")}</label>
                 <input value={settings.doubao_resource_id} onChange={(event) => setSettings({ ...settings, doubao_resource_id: event.target.value })} />
-                <label>Language override</label>
+                <label>{t("voice.languageOverride")}</label>
                 <input
                   value={settings.doubao_language}
                   onChange={(event) => setSettings({ ...settings, doubao_language: event.target.value })}
-                  placeholder="Optional, for supported endpoints only"
+                  placeholder={t("voice.languagePlaceholder")}
                 />
-                <p className="hint">
-                  Leave language empty by default. Volcengine documents this field as endpoint/mode dependent.
-                </p>
-                <label>X-Api-Key</label>
-                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder="Stored in OS keyring" />
+                <p className="hint">{t("voice.languageHint")}</p>
+                <label>{t("voice.apiKey")}</label>
+                <input value={apiKey} onChange={(event) => setApiKey(event.target.value)} type="password" placeholder={t("voice.apiKeyPlaceholder")} />
                 <p className={hasApiKey ? "hint good-text" : "hint warn-text"}>
-                  {hasApiKey ? "KEY SAVED in secure storage." : "KEY MISSING: paste X-Api-Key here before testing."}
+                  {hasApiKey ? t("voice.keySaved") : t("voice.keyMissing")}
                 </p>
                 <label className="check">
                   <input
@@ -705,39 +718,39 @@ function App() {
                     checked={settings.paste_after_transcribe}
                     onChange={(event) => setSettings({ ...settings, paste_after_transcribe: event.target.checked })}
                   />
-                  Paste final transcript
+                  {t("voice.pasteTranscript")}
                 </label>
                 <div className="actions">
-                  <button onClick={() => runAction(saveSettings)}>Save Voice</button>
+                  <button onClick={() => runAction(saveSettings)}>{t("voice.saveVoice")}</button>
                 </div>
 
                 <div className="test-box">
                   <div className="test-head">
-                    <span>TEST INPUT</span>
-                    <strong>{status.busy ? "TRANSCRIBING" : status.recording ? "LISTENING" : "READY"}</strong>
+                    <span>{t("voice.testInput")}</span>
+                    <strong>{status.busy ? t("voice.transcribing") : status.recording ? t("voice.listening") : t("voice.ready")}</strong>
                   </div>
                   <div className="transcript-preview">
-                    {voiceText || "Click Start and speak to test third-party ASR transcription."}
+                    {voiceText || t("voice.testHint")}
                   </div>
                   <div className="actions">
-                    <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>Start</button>
-                    <button disabled={!status.recording && !status.busy} onClick={() => runAction(stopRecording)}>Stop</button>
-                    <button className="secondary" disabled={!status.recording} onClick={() => runAction(cancelRecording)}>Cancel</button>
+                    <button disabled={status.recording || status.busy} onClick={() => runAction(startRecording)}>{t("voice.start")}</button>
+                    <button disabled={!status.recording && !status.busy} onClick={() => runAction(stopRecording)}>{t("voice.stop")}</button>
+                    <button className="secondary" disabled={!status.recording} onClick={() => runAction(cancelRecording)}>{t("voice.cancel")}</button>
                   </div>
                 </div>
               </>
             ) : (
               <div className="actions">
-                <button onClick={() => runAction(saveSettings)}>Save Voice</button>
+                <button onClick={() => runAction(saveSettings)}>{t("voice.saveVoice")}</button>
               </div>
             )}
           </Panel>
         )}
 
         {activeView === "logs" && (
-          <Panel title="Event Log">
+          <Panel title={t("logs.title")}>
             <div className="actions">
-              <button className="secondary" onClick={() => runAction(clearLogs)}>Clear</button>
+              <button className="secondary" onClick={() => runAction(clearLogs)}>{t("logs.clear")}</button>
             </div>
             <div className="log">
               {events.map((event, index) => <div key={`${event}-${index}`}>{event}</div>)}
@@ -768,8 +781,8 @@ function App() {
               textAlign: "center",
             }}
           >
-            <h3 style={{ marginTop: 0, color: "#07c2d6" }}>Confirm pairing</h3>
-            <p style={{ color: "#aab" }}>Does this code match the one on the board screen?</p>
+            <h3 style={{ marginTop: 0, color: "#07c2d6" }}>{t("device.confirmPairing")}</h3>
+            <p style={{ color: "#aab" }}>{t("device.pairingCodeMatch")}</p>
             <div
               style={{
                 fontSize: 44,
@@ -782,12 +795,9 @@ function App() {
             >
               {pairCode}
             </div>
-            <p style={{ color: "#aab", fontSize: 13 }}>
-              If they match, press the <strong>middle (●)</strong> key on the board to confirm,
-              or the <strong>left (◀)</strong> key to cancel.
-            </p>
+            <p style={{ color: "#aab", fontSize: 13 }} dangerouslySetInnerHTML={{ __html: t("device.pairingConfirmHint") }} />
             <div className="actions" style={{ justifyContent: "center" }}>
-              <button className="secondary" onClick={() => setPairCode(null)}>Close</button>
+              <button className="secondary" onClick={() => setPairCode(null)}>{t("device.close")}</button>
             </div>
           </div>
         </div>
@@ -803,15 +813,6 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
       {children}
     </section>
   );
-}
-
-function viewTitle(view: string) {
-  switch (view) {
-    case "flash": return "Firmware Flasher";
-    case "voice": return "Voice Console";
-    case "logs": return "Event Stream";
-    default: return "Device Control";
-  }
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
