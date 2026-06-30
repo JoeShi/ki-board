@@ -1,0 +1,15 @@
+[package]
+name = "powershell"
+version = "0.1.0"
+edition = "2021"
+description = "GUI-subsystem PowerShell shim to suppress Kiro CLI hook popup windows on Windows"
+
+[[bin]]
+name = "powershell"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+strip = true
+lto = true
+panic = "abort"
